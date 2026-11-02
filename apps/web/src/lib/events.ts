@@ -15,6 +15,8 @@ export type CareEvent = {
     | "mood.created"
     | "chat.message"
     | "conversation.summarized"
+    | "message.created"
+    | "message.played"
     | "device.status"
     | "note.created";
   payload?: unknown;

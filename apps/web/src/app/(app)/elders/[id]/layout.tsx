@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ChevronLeft, CircleCheck, Phone, Plus, TriangleAlert } from "lucide-react";
+import { ChevronLeft, CircleCheck, Mail, Phone, Plus, TriangleAlert } from "lucide-react";
 import { prisma } from "@/lib/prisma";
 import { loadElderPage } from "@/lib/elder-page";
 import { familyStatus } from "@/lib/dashboard";
@@ -17,10 +17,11 @@ export default async function ElderLayout({ children, params }: { children: Reac
   const { caregiver, elder } = await loadElderPage(id);
   const today = startOfZonedDay(new Date(), elder.timezone);
 
-  const [openAlerts, checkIns, lastTalk] = await Promise.all([
+  const [openAlerts, checkIns, lastTalk, unheard] = await Promise.all([
     prisma.alert.findMany({ where: { elderId: id, acknowledgedAt: null }, select: { severity: true, title: true } }),
     prisma.checkIn.findMany({ where: { elderId: id, scheduledFor: { gte: today } }, include: { reminder: { select: { label: true } } } }),
     prisma.conversation.findFirst({ where: { elderId: id, summary: { not: null } }, orderBy: { startedAt: "desc" }, select: { mood: true } }),
+    prisma.familyMessage.count({ where: { elderId: id, direction: "FROM_ELDER", playedAt: null } }),
   ]);
   const status = familyStatus({
     openAlerts,
@@ -59,6 +60,9 @@ export default async function ElderLayout({ children, params }: { children: Reac
               Call
             </ButtonLink>
           )}
+          <ButtonLink href={`/elders/${id}/messages`} variant="secondary" icon={Mail}>
+            Send message
+          </ButtonLink>
           <ButtonLink href={`/elders/${id}/reminders?add=1`} icon={Plus}>
             Add reminder
           </ButtonLink>
@@ -66,7 +70,7 @@ export default async function ElderLayout({ children, params }: { children: Reac
       </header>
 
       <div className="mt-6 border-b border-line">
-        <ElderTabs elderId={id} openAlerts={attention} />
+        <ElderTabs elderId={id} openAlerts={attention} unheard={unheard} />
       </div>
 
       <div className="mt-6">{children}</div>

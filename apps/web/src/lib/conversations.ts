@@ -161,7 +161,16 @@ export async function refreshConversationSummary(id: string) {
     const data = await summarize(convo);
     // Only write if it's still open (finishConversation may have finalised it meanwhile).
     const res = await prisma.conversation.updateMany({ where: { id, endedAt: null }, data });
-    if (res.count) emitCareEvent({ elderId: convo.elderId, type: "conversation.summarized", payload: { id, mood: data.mood } });
+    if (res.count) {
+      // Tell open dashboards about concerns that weren't in the previous summary (real-time heads-up).
+      const before = new Set<string>(convo.concerns ? JSON.parse(convo.concerns) : []);
+      const newConcerns = (JSON.parse(data.concerns) as string[]).filter((c) => !before.has(c));
+      emitCareEvent({
+        elderId: convo.elderId,
+        type: "conversation.summarized",
+        payload: { id, mood: data.mood, newConcerns, elderName: convo.elder.name },
+      });
+    }
     return res.count ? data : null;
   } finally {
     inFlight.delete(id);

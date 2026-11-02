@@ -297,3 +297,86 @@ export async function fetchConversations(elderId: string): Promise<ConversationS
   const { data } = await api.get(`/api/elders/${elderId}/conversations`);
   return data.conversations;
 }
+
+// --- Family messages ---
+
+export type FamilyMessage = {
+  id: string;
+  direction: "TO_ELDER" | "FROM_ELDER";
+  senderName: string;
+  kind: "voice" | "text";
+  text: string | null;
+  audioUrl: string | null; // absolute once resolved; needs authHeaders() to play
+  playedAt: string | null;
+  createdAt: string;
+};
+
+export async function authHeaders(): Promise<Record<string, string>> {
+  const session = await getSession();
+  return session ? { Authorization: `Bearer ${session.token}` } : {};
+}
+
+async function absolute(list: FamilyMessage[]) {
+  const baseURL = await getServerUrl();
+  return list.map((m) => ({ ...m, audioUrl: m.audioUrl ? `${baseURL}${m.audioUrl}` : null }));
+}
+
+async function uploadAudio(path: string, fileUri: string, fields: Record<string, string> = {}) {
+  const [baseURL, headers] = await Promise.all([getServerUrl(), authHeaders()]);
+  const form = new FormData();
+  form.append("audio", new File(fileUri));
+  for (const [k, v] of Object.entries(fields)) form.append(k, v);
+  const res = await fetch(`${baseURL}${path}`, { method: "POST", headers, body: form });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error ?? `Upload failed (${res.status})`);
+  return data;
+}
+
+// Patient side
+export async function fetchMyMessages(): Promise<{ messages: FamilyMessage[]; unplayed: FamilyMessage[] }> {
+  const api = await client();
+  const { data } = await api.get("/api/mobile/messages");
+  return { messages: await absolute(data.messages), unplayed: await absolute(data.unplayed) };
+}
+
+export async function sendReply(fileUri: string, replyToId?: string | null) {
+  return uploadAudio("/api/mobile/messages", fileUri, replyToId ? { replyToId } : {});
+}
+
+export async function markMessagePlayed(id: string) {
+  const api = await client();
+  await api.post(`/api/messages/${id}/played`);
+}
+
+// Caretaker side
+export async function fetchThread(elderId: string): Promise<FamilyMessage[]> {
+  const api = await client();
+  const { data } = await api.get(`/api/elders/${elderId}/messages`);
+  return absolute(data.messages);
+}
+
+export async function sendTextMessage(elderId: string, text: string) {
+  const api = await client();
+  await api.post(`/api/elders/${elderId}/messages`, { text });
+}
+
+export async function sendVoiceMessage(elderId: string, fileUri: string) {
+  return uploadAudio(`/api/elders/${elderId}/messages`, fileUri);
+}
+
+export type FeedItem = {
+  id: string;
+  type: "alert" | "message" | "played";
+  elderId: string;
+  elderName: string;
+  title: string;
+  body: string;
+  severity: "info" | "warning" | "critical";
+  at: string;
+};
+
+export async function fetchFeed(since: string): Promise<{ items: FeedItem[]; serverTime: string }> {
+  const api = await client();
+  const { data } = await api.get("/api/caregiver/feed", { params: { since } });
+  return data;
+}

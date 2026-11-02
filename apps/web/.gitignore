@@ -43,3 +43,6 @@ next-env.d.ts
 
 # test databases
 /prisma/test*.db*
+
+# uploaded / generated audio (family messages)
+/storage

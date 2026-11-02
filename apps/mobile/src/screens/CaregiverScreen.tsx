@@ -1,10 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
-import { ActivityIndicator, Alert, Linking, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ActivityIndicator, Alert, Animated, AppState, Linking, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
+import * as Haptics from "expo-haptics";
 import {
   acknowledgeAlert,
   ConversationSummary,
   ElderOverview,
   errorMessage,
+  FeedItem,
+  fetchFeed,
   fetchConversations,
   fetchOverview,
   isUnauthorized,
@@ -17,6 +20,7 @@ import { Icon, type IconName } from "../ui/Icon";
 import { Pill, type Tone } from "../ui/Pill";
 import { ScreenHeader } from "../ui/ScreenHeader";
 import { colors, radius } from "../ui/theme";
+import { MessagesSection } from "./caretaker/MessagesSection";
 
 type Tab = "family" | "alerts" | "settings";
 
@@ -56,6 +60,20 @@ export function CaregiverScreen({ name, lang, onLang, onSignOut }: { name: strin
   const [family, setFamily] = useState<ElderOverview[] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [banner, setBanner] = useState<FeedItem | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const since = useRef(new Date().toISOString());
+  const slide = useRef(new Animated.Value(-140)).current;
+
+  const showBanner = useCallback(
+    (item: FeedItem) => {
+      setBanner(item);
+      Haptics.notificationAsync(item.severity === "critical" ? Haptics.NotificationFeedbackType.Error : Haptics.NotificationFeedbackType.Warning).catch(() => {});
+      Animated.spring(slide, { toValue: 0, useNativeDriver: true }).start();
+      setTimeout(() => Animated.timing(slide, { toValue: -140, duration: 250, useNativeDriver: true }).start(() => setBanner((b) => (b?.id === item.id ? null : b))), item.severity === "critical" ? 15000 : 7000);
+    },
+    [slide]
+  );
 
   const load = useCallback(async () => {
     try {
@@ -72,8 +90,24 @@ export function CaregiverScreen({ name, lang, onLang, onSignOut }: { name: strin
       if (token) registerCaregiverPushToken(token).catch(() => {});
     });
     const timer = setInterval(load, 30_000);
-    return () => clearInterval(timer);
-  }, [load]);
+    // Real-time-ish: Expo Go can't receive push, so check the activity feed every 10 s while open.
+    const feedTimer = setInterval(async () => {
+      if (AppState.currentState !== "active") return;
+      try {
+        const { items, serverTime } = await fetchFeed(since.current);
+        since.current = serverTime;
+        if (items.length) {
+          showBanner(items[0]);
+          setRefreshKey((k) => k + 1);
+          load();
+        }
+      } catch {}
+    }, 10_000);
+    return () => {
+      clearInterval(timer);
+      clearInterval(feedTimer);
+    };
+  }, [load, showBanner]);
 
   const refresh = async () => {
     setRefreshing(true);
@@ -93,10 +127,39 @@ export function CaregiverScreen({ name, lang, onLang, onSignOut }: { name: strin
   const urgentCount = alerts.filter((a) => a.severity !== "info").length;
   const parent = family.find((f) => f.elder.id === selected);
 
-  if (parent) return <ParentDetail parent={parent} lang={lang} onBack={() => setSelected(null)} onChanged={load} />;
+  const bannerView = banner && (
+    <Animated.View style={[styles.banner, { transform: [{ translateY: slide }] }, banner.severity === "critical" && { backgroundColor: colors.bad }]}>
+      <Pressable
+        onPress={() => {
+          setSelected(banner.elderId);
+          setBanner(null);
+        }}
+        style={{ flexDirection: "row", gap: 10, alignItems: "center" }}
+      >
+        <Icon name={banner.type === "message" ? "mic" : banner.type === "played" ? "checkmark-done" : "alert-circle"} size={24} color={colors.white} />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.bannerTitle} numberOfLines={1}>
+            {banner.type === "alert" ? `${banner.elderName.split(" ")[0]}: ${banner.title}` : banner.title}
+          </Text>
+          <Text style={styles.bannerBody} numberOfLines={2}>
+            {banner.body}
+          </Text>
+        </View>
+      </Pressable>
+    </Animated.View>
+  );
+
+  if (parent)
+    return (
+      <View style={{ flex: 1 }}>
+        <ParentDetail parent={parent} lang={lang} refreshKey={refreshKey} onBack={() => setSelected(null)} onChanged={load} />
+        {bannerView}
+      </View>
+    );
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
+      {bannerView}
       <ScrollView contentContainerStyle={{ padding: 18, gap: 14, paddingBottom: 30 }} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}>
         {tab === "family" && (
           <>
@@ -223,13 +286,13 @@ export function CaregiverScreen({ name, lang, onLang, onSignOut }: { name: strin
   );
 }
 
-function ParentDetail({ parent, lang, onBack, onChanged }: { parent: ElderOverview; lang: Lang; onBack: () => void; onChanged: () => void }) {
+function ParentDetail({ parent, lang, refreshKey, onBack, onChanged }: { parent: ElderOverview; lang: Lang; refreshKey: number; onBack: () => void; onChanged: () => void }) {
   const [talks, setTalks] = useState<ConversationSummary[] | null>(null);
   useEffect(() => {
     fetchConversations(parent.elder.id)
       .then(setTalks)
       .catch(() => setTalks([]));
-  }, [parent.elder.id]);
+  }, [parent.elder.id, refreshKey]);
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -259,6 +322,8 @@ function ParentDetail({ parent, lang, onBack, onChanged }: { parent: ElderOvervi
             </Pressable>
           </Card>
         ))}
+
+        <MessagesSection elderId={parent.elder.id} elderName={parent.elder.name} lang={lang} refreshKey={refreshKey} />
 
         <Card style={{ gap: 10 }}>
           <Text style={styles.name}>{t(lang, "today")}</Text>
@@ -340,6 +405,23 @@ function TabButton({ icon, label, active, onPress, badge }: { icon: IconName; la
 
 const styles = StyleSheet.create({
   center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.bg },
+  banner: {
+    position: "absolute",
+    top: 8,
+    left: 12,
+    right: 12,
+    zIndex: 10,
+    backgroundColor: colors.ink,
+    borderRadius: radius.md,
+    padding: 14,
+    shadowColor: "#000",
+    shadowOpacity: 0.2,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8,
+  },
+  bannerTitle: { color: colors.white, fontSize: 15, fontWeight: "800" },
+  bannerBody: { color: "rgba(255,255,255,0.8)", fontSize: 13, marginTop: 2 },
   h1: { fontSize: 28, fontWeight: "800", color: colors.ink, marginTop: 8 },
   sub: { fontSize: 15, color: colors.muted },
   row: { flexDirection: "row", alignItems: "center", gap: 12 },

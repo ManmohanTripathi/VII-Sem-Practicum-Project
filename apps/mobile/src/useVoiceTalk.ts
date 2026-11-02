@@ -9,16 +9,18 @@ import {
   useAudioRecorder,
 } from "expo-audio";
 import * as Speech from "expo-speech";
-import { errorMessage, sendVoice, type VoiceReply } from "./api";
+import { errorMessage, sendReply, sendVoice, type VoiceReply } from "./api";
 import { Lang, say, t } from "./i18n";
 
 export type VoicePhase = "idle" | "listening" | "thinking" | "speaking";
 
 const MIN_RECORDING_MS = 600;
 
-// Hold-to-talk + playback, shared by the home screen and the chat screen.
-//   start()/stop()  — wire to a button's onPressIn/onPressOut
-//   speak()         — play server audio (ElevenLabs) or fall back to on-device speech
+// Hold-to-talk + playback, shared by the patient screens.
+//   start()/stop()        — hold-to-talk with Saathi (onPressIn / onPressOut)
+//   start()/stopReply()   — hold-to-record a voice reply to the family
+//   speak()               — play server audio (ElevenLabs / a family voice note) or on-device speech
+//   playMessage()         — "Message from Anita" + the message, resolves when finished
 // `phase` drives the Saathi avatar animation.
 export function useVoiceTalk(lang: Lang, onTurn?: (turn: VoiceReply) => void) {
   const [phase, setPhase] = useState<VoicePhase>("idle");
@@ -44,23 +46,27 @@ export function useVoiceTalk(lang: Lang, onTurn?: (turn: VoiceReply) => void) {
   }, []);
 
   const speak = useCallback(
-    async (text: string, audioUrl: string | null) => {
+    async (text: string, audioUrl: string | null, headers?: Record<string, string>, onEnd?: () => void) => {
       player.current?.remove();
       player.current = null;
       setPhase("speaking");
-      const fallback = () => say(text, lang, () => setPhase((p) => (p === "speaking" ? "idle" : p)));
+      const finished = () => {
+        setPhase((p) => (p === "speaking" ? "idle" : p));
+        onEnd?.();
+      };
+      const fallback = () => (text ? say(text, lang, finished) : finished());
       if (!audioUrl) return fallback();
       try {
         // Playback mode: loudspeaker, and audible even with the silent switch on.
         await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
-        const p = createAudioPlayer({ uri: audioUrl });
+        const p = createAudioPlayer(headers ? { uri: audioUrl, headers } : { uri: audioUrl });
         player.current = p;
         p.addListener("playbackStatusUpdate", (status) => {
           if (status.didJustFinish || status.error) {
             p.remove();
             if (player.current === p) player.current = null;
             if (status.error) fallback();
-            else setPhase((ph) => (ph === "speaking" ? "idle" : ph));
+            else finished();
           }
         });
         p.play();
@@ -69,6 +75,16 @@ export function useVoiceTalk(lang: Lang, onTurn?: (turn: VoiceReply) => void) {
       }
     },
     [lang]
+  );
+
+  // Announce the sender, then play their voice note (or read their text). Resolves when done.
+  const playMessage = useCallback(
+    (intro: string, message: { audioUrl: string | null; text: string | null }, headers?: Record<string, string>) =>
+      new Promise<void>((resolve) => {
+        setPhase("speaking");
+        say(intro, lang, () => speak(message.text ?? "", message.audioUrl, headers, resolve));
+      }),
+    [lang, speak]
   );
 
   const start = useCallback(async () => {
@@ -91,8 +107,8 @@ export function useVoiceTalk(lang: Lang, onTurn?: (turn: VoiceReply) => void) {
     }
   }, [lang, recorder, stopSpeaking]);
 
-  const stop = useCallback(async () => {
-    if (phaseRef.current !== "listening") return;
+  const finishRecording = useCallback(async () => {
+    if (phaseRef.current !== "listening") return null;
     const heldFor = Date.now() - startedAt.current;
     try {
       await recorder.stop();
@@ -101,8 +117,14 @@ export function useVoiceTalk(lang: Lang, onTurn?: (turn: VoiceReply) => void) {
     if (heldFor < MIN_RECORDING_MS || !uri) {
       setPhase("idle");
       say(t(lang, "tooShort"), lang);
-      return;
+      return null;
     }
+    return uri;
+  }, [lang, recorder]);
+
+  const stop = useCallback(async () => {
+    const uri = await finishRecording();
+    if (!uri) return;
     setPhase("thinking");
     try {
       const turn = await sendVoice(uri);
@@ -112,7 +134,25 @@ export function useVoiceTalk(lang: Lang, onTurn?: (turn: VoiceReply) => void) {
       setPhase("idle");
       Alert.alert("Saathi", errorMessage(e, "Sorry, I couldn't hear you just now."));
     }
-  }, [lang, onTurn, recorder, speak]);
+  }, [finishRecording, onTurn, speak]);
 
-  return { phase, start, stop, speak, stopSpeaking, setPhase };
+  // Voice reply to the family instead of a chat with Saathi.
+  const stopReply = useCallback(
+    async (replyToId: string | null, senderFirstName: string, onSent?: () => void) => {
+      const uri = await finishRecording();
+      if (!uri) return;
+      setPhase("thinking");
+      try {
+        await sendReply(uri, replyToId);
+        onSent?.();
+        await speak(t(lang, "replySent").replace("{name}", senderFirstName), null);
+      } catch (e) {
+        setPhase("idle");
+        Alert.alert(t(lang, "familyTile"), errorMessage(e, "Couldn't send. Please try again."));
+      }
+    },
+    [finishRecording, lang, speak]
+  );
+
+  return { phase, start, stop, stopReply, speak, playMessage, stopSpeaking, setPhase };
 }

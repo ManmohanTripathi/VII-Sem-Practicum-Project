@@ -8,10 +8,11 @@ import { HomeScreen } from "./src/screens/HomeScreen";
 import { ChatScreen } from "./src/screens/ChatScreen";
 import { RemindersScreen } from "./src/screens/RemindersScreen";
 import { SettingsScreen } from "./src/screens/SettingsScreen";
+import { FamilyScreen } from "./src/screens/FamilyScreen";
 import { CaregiverScreen } from "./src/screens/CaregiverScreen";
 import { colors } from "./src/ui/theme";
 
-type PatientScreen = "home" | "reminders" | "chat" | "settings";
+type PatientScreen = "home" | "reminders" | "chat" | "settings" | "family";
 
 const PREFS_KEY = "carecircle:prefs";
 
@@ -79,6 +80,8 @@ export default function App() {
     content = <CaregiverScreen name={session.caregiver.name} lang={lang} onLang={changeLang} onSignOut={handleSwitchProfile} />;
   } else if (screen === "chat") {
     content = <ChatScreen lang={lang} onBack={goHome} />;
+  } else if (screen === "family") {
+    content = <FamilyScreen lang={lang} largeText={largeText} onBack={goHome} />;
   } else if (screen === "reminders") {
     content = <RemindersScreen lang={lang} largeText={largeText} onBack={goHome} />;
   } else if (screen === "settings") {

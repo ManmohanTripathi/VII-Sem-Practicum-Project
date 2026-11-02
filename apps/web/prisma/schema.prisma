@@ -33,6 +33,7 @@ model Elder {
   sensorReadings SensorReading[]
   chatMessages   ChatMessage[]
   conversations  Conversation[]
+  familyMessages FamilyMessage[]
   alerts         Alert[]
   notes          CaregiverNote[]
 }
@@ -48,6 +49,7 @@ model Caregiver {
 
   elders    CaregiverLink[]
   notes     CaregiverNote[]
+  messages  FamilyMessage[]
 }
 
 // Many-to-many: a caregiver can watch multiple elders, an elder can have multiple caregivers
@@ -226,4 +228,27 @@ model CaregiverNote {
 
   elder       Elder     @relation(fields: [elderId], references: [id], onDelete: Cascade)
   caregiver   Caregiver @relation(fields: [caregiverId], references: [id], onDelete: Cascade)
+}
+
+// Voice notes and text messages between the family and the elder.
+// TO_ELDER: sent by a caregiver, played aloud on the elder's phone (text is spoken via TTS).
+// FROM_ELDER: the elder's spoken reply (with an STT transcript for the family to read).
+model FamilyMessage {
+  id          String     @id @default(cuid())
+  elderId     String
+  direction   String     // "TO_ELDER" | "FROM_ELDER"
+  caregiverId String?    // sender (TO_ELDER) or the caregiver being replied to (FROM_ELDER)
+  senderName  String
+  kind        String     // "voice" | "text"
+  text        String?    // typed text, or the transcript of a voice message
+  audioFile   String?    // file name under STORAGE_DIR/messages (recording or synthesized speech)
+  audioMime   String?
+  replyToId   String?
+  playedAt    DateTime?  // when the elder's phone finished playing it / the caregiver opened it
+  createdAt   DateTime   @default(now())
+
+  elder       Elder      @relation(fields: [elderId], references: [id], onDelete: Cascade)
+  caregiver   Caregiver? @relation(fields: [caregiverId], references: [id], onDelete: SetNull)
+
+  @@index([elderId, createdAt])
 }

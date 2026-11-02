@@ -2,8 +2,12 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Alert, AppState, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import {
+  authHeaders,
   DueAnnouncement,
   errorMessage,
+  FamilyMessage,
+  fetchMyMessages,
+  markMessagePlayed,
   fetchDue,
   fetchToday,
   isUnauthorized,
@@ -56,7 +60,7 @@ export function HomeScreen({
   lang: Lang;
   largeText: boolean;
   readAloud: boolean;
-  onOpen: (screen: "reminders" | "chat" | "settings") => void;
+  onOpen: (screen: "reminders" | "chat" | "settings" | "family") => void;
   onSwitchProfile: () => void;
 }) {
   const fs = sizes(largeText);
@@ -68,8 +72,10 @@ export function HomeScreen({
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [caption, setCaption] = useState<{ heard?: string; text: string } | null>(null);
+  const [latestMsg, setLatestMsg] = useState<FamilyMessage | null>(null);
   const pushSetUp = useRef(false);
   const announced = useRef<Set<string>>(new Set());
+  const headers = useRef<Record<string, string>>({});
 
   const loadToday = useCallback(async () => {
     try {
@@ -109,28 +115,51 @@ export function HomeScreen({
     [loadToday]
   );
   const voice = useVoiceTalk(lang, onTurn);
-  const { speak } = voice;
+  const { speak, playMessage } = voice;
   const phaseRef = useRef(voice.phase);
   phaseRef.current = voice.phase;
 
-  // Speak each newly due reminder once, by itself.
+  const remember = (key: string) => {
+    announced.current.add(key);
+    AsyncStorage.setItem(ANNOUNCED_KEY, JSON.stringify([...announced.current].slice(-80))).catch(() => {});
+  };
+
+  const playFamilyMessage = useCallback(
+    async (m: FamilyMessage) => {
+      const name = m.senderName.split(" ")[0];
+      setCaption({ text: m.text ? `${t(lang, "messageFrom").replace("{name}", name)}: ${m.text}` : t(lang, "messageFrom").replace("{name}", name) });
+      await playMessage(t(lang, "messageFrom").replace("{name}", name), m, headers.current);
+      if (!m.playedAt) markMessagePlayed(m.id).catch(() => {});
+    },
+    [lang, playMessage]
+  );
+
+  // Every few seconds: speak each newly due reminder once, then play each new family message once —
+  // all by itself, so the parent doesn't need to touch anything.
   const checkDue = useCallback(async () => {
-    let list: DueAnnouncement[];
-    try {
-      list = await fetchDue();
-    } catch {
+    const [dueList, msgs] = await Promise.all([fetchDue().catch(() => null), fetchMyMessages().catch(() => null)]);
+    if (dueList) setDue(dueList);
+    if (msgs) {
+      const recent = [...msgs.messages].reverse().find((m) => m.direction === "TO_ELDER");
+      setLatestMsg(recent ?? null);
+    }
+    if (phaseRef.current !== "idle") return;
+    const next = dueList?.find((d) => !announced.current.has(d.key));
+    if (next) {
+      remember(next.key);
+      setCaption({ text: next.text });
+      await speak(next.text, next.audioUrl);
       return;
     }
-    setDue(list);
-    const next = list.find((d) => !announced.current.has(d.key));
-    if (!next || phaseRef.current !== "idle") return;
-    announced.current.add(next.key);
-    AsyncStorage.setItem(ANNOUNCED_KEY, JSON.stringify([...announced.current].slice(-60))).catch(() => {});
-    setCaption({ text: next.text });
-    await speak(next.text, next.audioUrl);
-  }, [speak]);
+    const newMsg = msgs?.unplayed.find((m) => !announced.current.has(`msg:${m.id}`));
+    if (newMsg) {
+      remember(`msg:${newMsg.id}`);
+      await playFamilyMessage(newMsg);
+    }
+  }, [speak, playFamilyMessage]);
 
   useEffect(() => {
+    authHeaders().then((h) => (headers.current = h));
     AsyncStorage.getItem(ANNOUNCED_KEY)
       .then((raw) => {
         if (raw) announced.current = new Set(JSON.parse(raw));
@@ -343,6 +372,40 @@ export function HomeScreen({
         </Card>
       )}
 
+      {/* Latest message from the family */}
+      {latestMsg && Date.now() - new Date(latestMsg.createdAt).getTime() < 48 * 3600_000 && (
+        <Card style={[styles.block, styles.msgCard]}>
+          <View style={styles.rowCenter}>
+            <View style={[styles.iconBubble, { backgroundColor: "#FCE7F3" }]}>
+              <Icon name="heart" size={26} color="#BE185D" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.msgFrom, { fontSize: fs.sm }]}>{t(lang, "messageFrom").replace("{name}", latestMsg.senderName.split(" ")[0])}</Text>
+              <Text style={[styles.cardTitle, { fontSize: fs.md }]} numberOfLines={3}>
+                {latestMsg.text ?? "🎙️"}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.twoButtons}>
+            <View style={{ flex: 1 }}>
+              <BigButton label={t(lang, "playAgain")} icon="play" variant="secondary" fontSize={fs.md} onPress={() => playFamilyMessage(latestMsg)} />
+            </View>
+            <Pressable
+              onPressIn={voice.start}
+              onPressOut={() => voice.stopReply(latestMsg.id, latestMsg.senderName.split(" ")[0])}
+              style={({ pressed }) => [styles.replyBtn, (pressed || phase === "listening") && { backgroundColor: colors.bad, borderColor: colors.bad }]}
+              accessibilityRole="button"
+              accessibilityLabel={t(lang, "holdToReply")}
+            >
+              <Icon name="mic" size={24} color={phase === "listening" ? colors.white : "#BE185D"} />
+              <Text style={[styles.replyText, { fontSize: fs.md }, phase === "listening" && { color: colors.white }]}>
+                {phase === "listening" ? t(lang, "listening").split("…")[0] : t(lang, "holdToReply")}
+              </Text>
+            </Pressable>
+          </View>
+        </Card>
+      )}
+
       {/* One question at a time */}
       {question && (
         <Card style={styles.block}>
@@ -369,6 +432,9 @@ export function HomeScreen({
       {/* Three tiles */}
       <View style={styles.tiles}>
         <Tile icon="alarm" label={t(lang, "remindersTile")} fontSize={fs.md} onPress={() => onOpen("reminders")} />
+        <Tile icon="heart" label={t(lang, "familyTile")} fontSize={fs.md} onPress={() => onOpen("family")} />
+      </View>
+      <View style={styles.tiles}>
         <Tile icon="chatbubble-ellipses" label={t(lang, "chatTile")} fontSize={fs.md} onPress={() => onOpen("chat")} />
         <Tile icon="call" label={t(lang, "helpTile")} fontSize={fs.md} onPress={askForHelp} danger />
       </View>
@@ -428,6 +494,10 @@ const styles = StyleSheet.create({
   option: { flex: 1, alignItems: "center", paddingVertical: 14, borderRadius: radius.md, borderWidth: 1.5, borderColor: colors.line, backgroundColor: colors.surface },
   optionLabel: { marginTop: 4, color: colors.ink, fontWeight: "700", textAlign: "center" },
   tiles: { flexDirection: "row", gap: 12 },
+  msgCard: { backgroundColor: "#FFF7FB", borderColor: "#F9D2E5", borderWidth: 2 },
+  msgFrom: { color: "#BE185D", fontWeight: "800" },
+  replyBtn: { flex: 1, minHeight: 64, borderRadius: radius.md, borderWidth: 1.5, borderColor: "#F9D2E5", backgroundColor: colors.surface, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 },
+  replyText: { color: "#BE185D", fontWeight: "800" },
   tile: {
     flex: 1,
     minHeight: 104,
