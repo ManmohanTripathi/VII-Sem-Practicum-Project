@@ -10,6 +10,8 @@ const lanAddresses = Object.values(networkInterfaces())
   .map((a) => a!.address);
 
 const nextConfig: NextConfig = {
+  // Keep the dev-only Next.js badge away from the sidebar's sign-out button.
+  devIndicators: { position: "bottom-right" },
   allowedDevOrigins: [...lanAddresses, ...(process.env.DEV_ORIGINS?.split(",").map((s) => s.trim()).filter(Boolean) ?? [])],
 };
 

@@ -81,3 +81,30 @@ describe("ElevenLabs", () => {
     expect(await synthesize("hi")).toBeNull();
   });
 });
+
+describe("Hindi vs Urdu transcription", () => {
+  it("retries as Hindi when Scribe returns Urdu script", async () => {
+    vi.stubEnv("ELEVENLABS_API_KEY", "xi");
+    fetchMock
+      .mockResolvedValueOnce(json({ text: "مجھے بہت بخار ہے۔", language_code: "urd" }))
+      .mockResolvedValueOnce(json({ text: "मुझे बहुत बुखार है।", language_code: "hin" }));
+    expect(await transcribe(new Blob(["x"]), undefined, "clip.m4a")).toBe("मुझे बहुत बुखार है।");
+    const second = fetchMock.mock.calls[1][1]!.body as FormData;
+    expect(second.get("language_code")).toBe("hin");
+  });
+
+  it("hints Hindi up front for Hindi-language elders", async () => {
+    vi.stubEnv("ELEVENLABS_API_KEY", "xi");
+    fetchMock.mockResolvedValueOnce(json({ text: "नमस्ते", language_code: "hin" }));
+    await transcribe(new Blob(["x"]), "hi", "clip.m4a");
+    expect((fetchMock.mock.calls[0][1]!.body as FormData).get("language_code")).toBe("hin");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves English alone", async () => {
+    vi.stubEnv("ELEVENLABS_API_KEY", "xi");
+    fetchMock.mockResolvedValueOnce(json({ text: "I have a fever", language_code: "eng" }));
+    expect(await transcribe(new Blob(["x"]))).toBe("I have a fever");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});

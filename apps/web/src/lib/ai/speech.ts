@@ -22,6 +22,11 @@ function ttsConfig() {
   };
 }
 
+// Arabic-script text (Urdu) or a detected Urdu language code.
+export function isUrdu(text: string, language: string | null) {
+  return language === "urd" || language === "ur" || /[\u0600-\u06FF]/.test(text);
+}
+
 export const speechStatus = () => ({
   stt: elevenLabsConfigured() || !!sttConfig(),
   tts: elevenLabsConfigured() || !!ttsConfig(),
@@ -30,7 +35,11 @@ export const speechStatus = () => ({
 
 export async function transcribe(audio: Blob, language?: string, filename?: string): Promise<string | null> {
   if (elevenLabsConfigured()) {
-    const out = await elevenTranscribe(audio, filename);
+    let out = await elevenTranscribe(audio, filename, language === "hi" ? "hin" : undefined);
+    // Spoken Hindi and Urdu sound the same, and auto-detect sometimes writes Hindi speech in Urdu
+    // script, which the app can't understand (no fever/help detection). The app only supports
+    // English and Hindi, so ask again as Hindi.
+    if (out && isUrdu(out.text, out.language)) out = (await elevenTranscribe(audio, filename, "hin")) ?? out;
     if (out) return out.text;
   }
   const cfg = sttConfig();

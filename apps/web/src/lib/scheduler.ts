@@ -152,14 +152,20 @@ async function processHubs(elder: Elder, now: Date) {
 
   const windowStart = new Date(now.getTime() - noActivityHours() * 3600_000);
   const [anyRecent, lastMotion] = await Promise.all([
-    prisma.sensorReading.findFirst({ where: { elderId: elder.id, kind: "motion", createdAt: { gte: windowStart } } }),
+    // The hub's earliest report inside the window: it must have been reporting since (about) the start
+    // of the window, otherwise a hub that just came back online would look like hours of no movement.
+    prisma.sensorReading.findFirst({
+      where: { elderId: elder.id, kind: "motion", createdAt: { gte: windowStart } },
+      orderBy: { createdAt: "asc" },
+    }),
     prisma.sensorReading.findFirst({
       where: { elderId: elder.id, kind: "motion", value: { gt: 0 } },
       orderBy: { createdAt: "desc" },
     }),
   ]);
   // Hub reported motion=0 during the window (so it's working) but nothing positive since windowStart.
-  if (anyRecent && lastMotion && lastMotion.createdAt < windowStart) {
+  const reportingWholeWindow = !!anyRecent && anyRecent.createdAt.getTime() - windowStart.getTime() <= 30 * 60_000;
+  if (reportingWholeWindow && lastMotion && lastMotion.createdAt < windowStart) {
     await raiseAlert({
       elderId: elder.id,
       kind: "NO_ACTIVITY",

@@ -240,3 +240,24 @@ describe("speech-to-text language hint", () => {
     expect((sttCall[1]!.body as FormData).get("language")).toBe("hi");
   });
 });
+
+describe("summary so far (while still talking)", () => {
+  it("writes a running summary without ending the conversation, and the final one later", async () => {
+    vi.stubEnv("GROQ_API_KEY", "");
+    const { caregiver } = await makeCaregiver();
+    const elder = await makeElder(caregiver.id);
+    const { refreshConversationSummary } = await import("@/lib/conversations");
+    const t = await companionTurn({ elder, text: "Mujhe bahut bukhaar hai", source: "app" });
+    const so = await refreshConversationSummary(t.conversationId!);
+    expect(so?.mood).toBe("unwell");
+    let convo = await prisma.conversation.findUniqueOrThrow({ where: { id: t.conversationId! } });
+    expect(convo.endedAt).toBeNull();
+    expect(convo.summary).toContain("Mujhe bahut bukhaar hai");
+    // a second message keeps the same conversation; finishing finalises it
+    await companionTurn({ elder, text: "aur khaansi bhi", source: "app" });
+    await call(voiceEnd.POST, req("POST", "/api/mobile/voice/end", { token: (await makeDevice(elder.id)).token, body: {} }));
+    convo = await prisma.conversation.findUniqueOrThrow({ where: { id: t.conversationId! } });
+    expect(convo.endedAt).not.toBeNull();
+    expect(convo.summary).toContain("aur khaansi bhi");
+  });
+});

@@ -2,7 +2,8 @@ import type { Elder } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { emitCareEvent } from "@/lib/events";
 import { raiseAlert, raiseOrMergeAlert } from "@/lib/alerts";
-import { currentConversation } from "@/lib/conversations";
+import { after } from "next/server";
+import { currentConversation, refreshConversationSummary } from "@/lib/conversations";
 import { answerCheckIn, findOpenCheckIn } from "@/lib/checkins";
 import { startOfZonedDay, zonedDayKey, zonedParts } from "@/lib/time";
 import { complete, type LlmMessage } from "@/lib/ai/llm";
@@ -353,6 +354,14 @@ export async function companionTurn(opts: {
 
   async function finish(r: CompanionResult) {
     r.conversationId = conversationId;
+    if (conversationId) {
+      // Update the caregiver's "summary so far" after the reply has been sent (never delays the senior).
+      // after() only works inside a request; elsewhere (MQTT bridge, scripts, tests) the scheduler
+      // summarises once the conversation goes quiet.
+      try {
+        after(() => refreshConversationSummary(conversationId).catch((err) => console.warn("[summary]", (err as Error).message)));
+      } catch {}
+    }
     if (persist) {
       const msg = await prisma.chatMessage.create({
         data: { elderId: elder.id, conversationId, role: "assistant", content: r.reply, source, viaVoice: !!opts.viaVoice },

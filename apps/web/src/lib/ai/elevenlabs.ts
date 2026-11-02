@@ -13,12 +13,17 @@ function key() {
   return process.env.ELEVENLABS_API_KEY ?? "";
 }
 
-export async function elevenTranscribe(audio: Blob, filename = "clip.m4a"): Promise<{ text: string; language: string | null } | null> {
+export async function elevenTranscribe(
+  audio: Blob,
+  filename = "clip.m4a",
+  languageCode?: string
+): Promise<{ text: string; language: string | null } | null> {
   if (!elevenLabsConfigured()) return null;
   const form = new FormData();
   form.append("file", audio, filename);
   form.append("model_id", process.env.ELEVENLABS_STT_MODEL || "scribe_v2");
-  // No language_code: Scribe auto-detects, so Hindi, Hinglish and English all work in one session.
+  // Without a language_code Scribe auto-detects, so Hindi, Hinglish and English all work in one session.
+  if (languageCode) form.append("language_code", languageCode);
   form.append("tag_audio_events", "false");
   try {
     const res = await fetch(`${API}/speech-to-text`, {

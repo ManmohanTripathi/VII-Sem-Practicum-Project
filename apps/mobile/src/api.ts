@@ -1,12 +1,42 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import Constants from "expo-constants";
 import axios from "axios";
 import { File } from "expo-file-system";
 
 const SERVER_URL_KEY = "carecircle:serverUrl";
 const SESSION_KEY = "carecircle:session";
 
-// Point this at the machine running the admin web app, e.g. http://192.168.1.20:3000
-export const DEFAULT_SERVER_URL = "http://localhost:3000";
+// While developing, the app is loaded from the same Mac that runs the backend (Expo's hostUri,
+// e.g. "10.227.249.130:8081"), so the server address can be worked out instead of typed.
+function devServerUrl(): string | null {
+  const host = Constants.expoConfig?.hostUri?.split(":")[0];
+  return host ? `http://${host}:3000` : null;
+}
+
+export const DEFAULT_SERVER_URL = devServerUrl() ?? "http://localhost:3000";
+
+async function reachable(url: string, ms = 3000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    await fetch(`${url}/api/auth/me`, { signal: controller.signal }); // any HTTP answer (even 401) means it's up
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// After a Wi-Fi change the saved address stops working. If so, switch to the Mac this app was
+// loaded from (only when that one answers), so nobody has to retype it.
+export async function autoFixServerUrl() {
+  const dev = devServerUrl();
+  const saved = await AsyncStorage.getItem(SERVER_URL_KEY);
+  if (!dev || !saved || saved === dev) return;
+  if (await reachable(saved)) return;
+  if (await reachable(dev)) await setServerUrl(dev);
+}
 
 // Who is using this phone: the senior (paired with a 6-digit code from the dashboard)
 // or a caregiver (signed in with their dashboard account).
@@ -164,7 +194,9 @@ export type Alert = {
 };
 
 export type ElderOverview = {
-  elder: { id: string; name: string; avatarColor: string; relation: string };
+  elder: { id: string; name: string; avatarColor: string; relation: string; phone: string | null };
+  status: { tone: "good" | "warn" | "bad"; label: string; detail: string };
+  lastTalk: { summary: string; mood: string | null; at: string; usedVoice: boolean } | null;
   done: number;
   missed: number;
   pending: number;

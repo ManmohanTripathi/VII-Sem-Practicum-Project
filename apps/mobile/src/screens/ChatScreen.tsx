@@ -88,7 +88,7 @@ export function ChatScreen({ lang, onBack }: { lang: Lang; onBack: () => void })
         contentContainerStyle={{ padding: 16, gap: 10 }}
         onContentSizeChange={() => scroll.current?.scrollToEnd({ animated: true })}
       >
-        {loading && <ActivityIndicator color="#4f46e5" />}
+        {loading && <ActivityIndicator color="#0F766E" />}
         {!loading && messages.length === 0 && <Text style={styles.empty}>{t(lang, "chatEmpty")}</Text>}
         {messages.map((m) => (
           <TouchableOpacity
@@ -100,7 +100,7 @@ export function ChatScreen({ lang, onBack }: { lang: Lang; onBack: () => void })
             <Text style={[styles.bubbleText, m.role === "user" && { color: "#fff" }]}>{m.content}</Text>
           </TouchableOpacity>
         ))}
-        {phase === "thinking" && <ActivityIndicator color="#4f46e5" style={{ alignSelf: "flex-start", margin: 8 }} />}
+        {phase === "thinking" && <ActivityIndicator color="#0F766E" style={{ alignSelf: "flex-start", margin: 8 }} />}
       </ScrollView>
 
       <View style={styles.inputRow}>
@@ -110,7 +110,7 @@ export function ChatScreen({ lang, onBack }: { lang: Lang; onBack: () => void })
           onPress={() => phase === "speaking" && voice.stopSpeaking()}
           disabled={phase === "thinking"}
           accessibilityLabel={t(lang, "holdToTalk")}
-          style={[styles.micButton, phase === "listening" && { backgroundColor: "#e11d48" }, phase === "speaking" && { backgroundColor: "#059669" }]}
+          style={[styles.micButton, phase === "listening" && { backgroundColor: "#B91C1C" }, phase === "speaking" && { backgroundColor: "#15803D" }]}
         >
           <Text style={{ fontSize: 24 }}>{phase === "speaking" ? "🔊" : "🎙️"}</Text>
         </Pressable>
@@ -130,7 +130,7 @@ export function ChatScreen({ lang, onBack }: { lang: Lang; onBack: () => void })
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#f8fafc" },
+  container: { flex: 1, backgroundColor: "#FAF8F5" },
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -139,27 +139,27 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     backgroundColor: "#fff",
     borderBottomWidth: 1,
-    borderBottomColor: "#e2e8f0",
+    borderBottomColor: "#ECE7E1",
   },
-  back: { fontSize: 18, color: "#4f46e5", fontWeight: "600" },
-  title: { fontSize: 18, fontWeight: "700", color: "#1e293b" },
-  empty: { fontSize: 18, color: "#64748b", textAlign: "center", marginTop: 40, lineHeight: 26, paddingHorizontal: 12 },
+  back: { fontSize: 18, color: "#0F766E", fontWeight: "600" },
+  title: { fontSize: 18, fontWeight: "700", color: "#1F2937" },
+  empty: { fontSize: 18, color: "#6B7280", textAlign: "center", marginTop: 40, lineHeight: 26, paddingHorizontal: 12 },
   bubble: { maxWidth: "85%", borderRadius: 20, paddingHorizontal: 16, paddingVertical: 12 },
-  mine: { alignSelf: "flex-end", backgroundColor: "#4f46e5" },
-  theirs: { alignSelf: "flex-start", backgroundColor: "#fff", borderWidth: 1, borderColor: "#e2e8f0" },
-  bubbleText: { fontSize: 19, lineHeight: 26, color: "#1e293b" },
-  inputRow: { flexDirection: "row", gap: 10, padding: 12, paddingBottom: 28, backgroundColor: "#fff", borderTopWidth: 1, borderTopColor: "#e2e8f0", alignItems: "flex-end" },
-  micButton: { width: 54, height: 54, borderRadius: 27, backgroundColor: "#4f46e5", alignItems: "center", justifyContent: "center" },
+  mine: { alignSelf: "flex-end", backgroundColor: "#0F766E" },
+  theirs: { alignSelf: "flex-start", backgroundColor: "#fff", borderWidth: 1, borderColor: "#ECE7E1" },
+  bubbleText: { fontSize: 19, lineHeight: 26, color: "#1F2937" },
+  inputRow: { flexDirection: "row", gap: 10, padding: 12, paddingBottom: 28, backgroundColor: "#fff", borderTopWidth: 1, borderTopColor: "#ECE7E1", alignItems: "flex-end" },
+  micButton: { width: 54, height: 54, borderRadius: 27, backgroundColor: "#0F766E", alignItems: "center", justifyContent: "center" },
   input: {
     flex: 1,
     borderWidth: 1.5,
-    borderColor: "#cbd5e1",
+    borderColor: "#DDD6CD",
     borderRadius: 14,
     paddingHorizontal: 14,
     paddingVertical: 12,
     fontSize: 18,
     maxHeight: 120,
   },
-  sendButton: { backgroundColor: "#4f46e5", borderRadius: 14, paddingHorizontal: 18, height: 54, justifyContent: "center" },
+  sendButton: { backgroundColor: "#0F766E", borderRadius: 14, paddingHorizontal: 18, height: 54, justifyContent: "center" },
   sendText: { color: "#fff", fontSize: 18, fontWeight: "700" },
 });

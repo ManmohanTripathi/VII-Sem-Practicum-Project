@@ -61,7 +61,8 @@ export function ConversationsCard({ conversations, elderName, title = "Conversat
               </div>
 
               <p className="mt-1.5 text-sm text-stone-700">
-                {c.summary ?? (c.endedAt ? "No summary available." : "Summary will appear when the conversation ends.")}
+                {!c.endedAt && c.summary && <span className="font-medium text-accent">So far: </span>}
+                {c.summary ?? (c.endedAt ? "No summary available." : "Summary will appear in a moment…")}
               </p>
 
               {c.concerns.length > 0 && (

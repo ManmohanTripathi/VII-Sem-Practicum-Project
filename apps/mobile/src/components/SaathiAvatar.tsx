@@ -3,10 +3,10 @@ import { Animated, Easing, StyleSheet, View } from "react-native";
 import type { VoicePhase } from "../useVoiceTalk";
 
 const COLORS: Record<VoicePhase, { face: string; ring: string }> = {
-  idle: { face: "#4f46e5", ring: "#a5b4fc" },
-  listening: { face: "#e11d48", ring: "#fda4af" },
-  thinking: { face: "#64748b", ring: "#cbd5e1" },
-  speaking: { face: "#059669", ring: "#6ee7b7" },
+  idle: { face: "#0F766E", ring: "#99D5CC" },
+  listening: { face: "#B91C1C", ring: "#F5B5B5" },
+  thinking: { face: "#6B7280", ring: "#DDD6CD" },
+  speaking: { face: "#15803D", ring: "#A7D9B5" },
 };
 
 function loop(anim: Animated.CompositeAnimation) {
@@ -148,7 +148,7 @@ const styles = StyleSheet.create({
   face: {
     alignItems: "center",
     justifyContent: "center",
-    shadowColor: "#1e1b4b",
+    shadowColor: "#134E4A",
     shadowOpacity: 0.25,
     shadowRadius: 16,
     shadowOffset: { width: 0, height: 8 },

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ActivityIndicator, Alert, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { ActivityIndicator, Alert, Linking, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import {
   acknowledgeAlert,
   ConversationSummary,
@@ -12,47 +12,54 @@ import {
 } from "../api";
 import { getPushToken } from "../notifications";
 import { Lang, t } from "../i18n";
+import { Card } from "../ui/Card";
+import { Icon, type IconName } from "../ui/Icon";
+import { Pill, type Tone } from "../ui/Pill";
+import { ScreenHeader } from "../ui/ScreenHeader";
+import { colors, radius } from "../ui/theme";
 
-const DOT: Record<string, { color: string; symbol: string }> = {
-  DONE_ON_TIME: { color: "#10b981", symbol: "✓" },
-  DONE_LATE: { color: "#f59e0b", symbol: "✓" },
-  MISSED: { color: "#f43f5e", symbol: "✕" },
-  SKIPPED: { color: "#94a3b8", symbol: "–" },
-  PENDING: { color: "#e2e8f0", symbol: "" },
+type Tab = "family" | "alerts" | "settings";
+
+const DOT: Record<string, { color: string; icon: IconName | null }> = {
+  DONE_ON_TIME: { color: colors.good, icon: "checkmark" },
+  DONE_LATE: { color: "#D97706", icon: "checkmark" },
+  MISSED: { color: colors.bad, icon: "close" },
+  SKIPPED: { color: colors.muted, icon: "remove" },
+  PENDING: { color: colors.line, icon: null },
 };
 
-const SEVERITY: Record<string, { bg: string; fg: string; label: string }> = {
-  critical: { bg: "#fff1f2", fg: "#e11d48", label: "URGENT" },
-  warning: { bg: "#fffbeb", fg: "#d97706", label: "CHECK" },
-  info: { bg: "#f8fafc", fg: "#64748b", label: "FYI" },
+const MOOD: Record<string, { label: string; tone: Tone }> = {
+  good: { label: "Seemed good", tone: "good" },
+  okay: { label: "Seemed okay", tone: "neutral" },
+  low: { label: "Seemed low", tone: "warn" },
+  unwell: { label: "Unwell", tone: "bad" },
 };
 
-const MOOD: Record<string, { label: string; color: string; bg: string }> = {
-  good: { label: "☺ Good", color: "#059669", bg: "#ecfdf5" },
-  okay: { label: "• Okay", color: "#475569", bg: "#f1f5f9" },
-  low: { label: "▾ Low", color: "#d97706", bg: "#fffbeb" },
-  unwell: { label: "⚠ Unwell", color: "#e11d48", bg: "#fff1f2" },
-};
+const STATUS_ICON: Record<string, IconName> = { good: "checkmark-circle", warn: "warning", bad: "alert-circle" };
 
-const MOOD_EMOJI: Record<string, string> = { great: "😄", okay: "🙂", not_great: "😕" };
+function ago(iso: string) {
+  const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  return h < 24 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
+}
 
-// Caretaker side: today's status for each parent, alerts to act on, and what they talked about with Saathi.
-export function CaregiverScreen({ name, lang, onSignOut }: { name: string; lang: Lang; onSignOut: () => void }) {
-  const [elders, setElders] = useState<ElderOverview[] | null>(null);
-  const [talks, setTalks] = useState<Record<string, ConversationSummary | null>>({});
+function time12(hhmm: string) {
+  const [h, m] = hhmm.split(":").map(Number);
+  return `${h % 12 === 0 ? 12 : h % 12}:${String(m).padStart(2, "0")} ${h >= 12 ? "PM" : "AM"}`;
+}
+
+// Caretaker side: Family · Alerts · Settings, with a detail screen per parent.
+export function CaregiverScreen({ name, lang, onLang, onSignOut }: { name: string; lang: Lang; onLang: (l: Lang) => void; onSignOut: () => void }) {
+  const [tab, setTab] = useState<Tab>("family");
+  const [family, setFamily] = useState<ElderOverview[] | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const list = await fetchOverview();
-      setElders(list);
-      const latest = await Promise.all(
-        list.map(async (e) => {
-          const convos = await fetchConversations(e.elder.id).catch(() => []);
-          return [e.elder.id, convos.find((c) => c.summary) ?? convos[0] ?? null] as const;
-        })
-      );
-      setTalks(Object.fromEntries(latest));
+      setFamily(await fetchOverview());
     } catch (e) {
       if (isUnauthorized(e)) return onSignOut();
       Alert.alert("Couldn't load", errorMessage(e, "Please try again."));
@@ -68,172 +75,297 @@ export function CaregiverScreen({ name, lang, onSignOut }: { name: string; lang:
     return () => clearInterval(timer);
   }, [load]);
 
-  async function ack(id: string) {
-    await acknowledgeAlert(id).catch(() => {});
-    load();
-  }
+  const refresh = async () => {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  };
 
-  if (!elders) {
+  if (!family) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" color="#4f46e5" />
+        <ActivityIndicator size="large" color={colors.accent} />
       </View>
     );
   }
 
+  const alerts = family.flatMap((f) => f.openAlerts.map((a) => ({ ...a, elderName: f.elder.name })));
+  const urgentCount = alerts.filter((a) => a.severity !== "info").length;
+  const parent = family.find((f) => f.elder.id === selected);
+
+  if (parent) return <ParentDetail parent={parent} lang={lang} onBack={() => setSelected(null)} onChanged={load} />;
+
   return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={{ padding: 20, paddingTop: 60, paddingBottom: 60 }}
-      refreshControl={
-        <RefreshControl
-          refreshing={refreshing}
-          onRefresh={async () => {
-            setRefreshing(true);
-            await load();
-            setRefreshing(false);
-          }}
-        />
-      }
-    >
-      <Text style={styles.title}>
-        {t(lang, "hi")} {name.split(" ")[0]}
-      </Text>
-      <Text style={styles.subtitle}>{t(lang, "familyToday")}</Text>
-
-      {elders.length === 0 && <Text style={styles.empty}>{t(lang, "noFamily")}</Text>}
-
-      {elders.map((e) => {
-        const talk = talks[e.elder.id];
-        const mood = talk?.mood ? MOOD[talk.mood] : null;
-        return (
-          <View key={e.elder.id} style={styles.card}>
-            <View style={styles.row}>
-              <View style={[styles.avatar, { backgroundColor: e.elder.avatarColor }]}>
-                <Text style={styles.avatarText}>{e.elder.name.slice(0, 1)}</Text>
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.name}>{e.elder.name}</Text>
-                <Text style={styles.meta}>
-                  {e.elder.relation}
-                  {e.hub !== "none" ? ` · hub ${e.hub}` : ""}
-                  {e.lastMood ? ` · ${MOOD_EMOJI[e.lastMood.mood] ?? ""} ${e.lastMood.mood.replace("_", " ")}` : ""}
-                </Text>
-              </View>
-            </View>
-
-            <View style={styles.stats}>
-              <Stat label={t(lang, "doneStat")} value={e.done} color="#059669" />
-              <Stat label={t(lang, "pendingStat")} value={e.pending} color="#475569" />
-              <Stat label={t(lang, "missedStat")} value={e.missed} color="#e11d48" />
-            </View>
-
-            {e.timeline.length > 0 && (
-              <View style={styles.timeline}>
-                {e.timeline.map((c) => {
-                  const d = DOT[c.status] ?? DOT.PENDING;
-                  return (
-                    <View key={c.id} style={styles.timelineItem}>
-                      <View style={[styles.dot, { backgroundColor: d.color }]}>
-                        <Text style={styles.dotText}>{d.symbol}</Text>
-                      </View>
-                      <Text style={styles.dotLabel} numberOfLines={1}>
-                        {c.time}
-                      </Text>
-                    </View>
-                  );
-                })}
-              </View>
-            )}
-
-            <View style={styles.talk}>
-              <View style={[styles.row, { gap: 8 }]}>
-                <Text style={styles.talkTitle}>
-                  {talk?.usedVoice ? "🎙 " : "💬 "}
-                  {t(lang, "lastTalk")}
-                </Text>
-                {mood && (
-                  <Text style={[styles.moodPill, { color: mood.color, backgroundColor: mood.bg }]}>{mood.label}</Text>
-                )}
-              </View>
-              <Text style={styles.talkText}>{talk?.summary ?? (talk ? "…" : t(lang, "noTalk"))}</Text>
-              {talk?.concerns?.length ? (
-                <View style={styles.concerns}>
-                  {talk.concerns.map((c) => (
-                    <Text key={c} style={styles.concern}>
-                      ⚠ {c}
-                    </Text>
-                  ))}
-                </View>
-              ) : null}
-            </View>
-
-            {e.openAlerts.map((a) => {
-              const s = SEVERITY[a.severity] ?? SEVERITY.info;
+    <View style={{ flex: 1, backgroundColor: colors.bg }}>
+      <ScrollView contentContainerStyle={{ padding: 18, gap: 14, paddingBottom: 30 }} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}>
+        {tab === "family" && (
+          <>
+            <Text style={styles.h1}>
+              {t(lang, "hi")} {name.split(" ")[0]}
+            </Text>
+            <Text style={styles.sub}>{t(lang, "familyToday")}</Text>
+            {family.length === 0 && <Text style={styles.sub}>{t(lang, "noFamily")}</Text>}
+            {family.map((f) => {
+              const tone = f.status.tone;
+              const toneColor = tone === "good" ? colors.good : tone === "warn" ? colors.warn : colors.bad;
+              const toneBg = tone === "good" ? colors.goodSoft : tone === "warn" ? colors.warnSoft : colors.badSoft;
               return (
-                <View key={a.id} style={[styles.alert, { backgroundColor: s.bg }]}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.alertLabel, { color: s.fg }]}>
-                      ⚠ {s.label} · {a.title}
-                    </Text>
-                    <Text style={styles.alertMessage}>{a.message}</Text>
-                  </View>
-                  <TouchableOpacity style={styles.ackButton} onPress={() => ack(a.id)}>
-                    <Text style={styles.ackText}>{t(lang, "onIt")}</Text>
-                  </TouchableOpacity>
-                </View>
+                <Pressable key={f.elder.id} onPress={() => setSelected(f.elder.id)} accessibilityRole="button" style={({ pressed }) => pressed && { opacity: 0.9 }}>
+                  <Card style={{ gap: 12 }}>
+                    <View style={styles.row}>
+                      <View style={[styles.avatar, { backgroundColor: f.elder.avatarColor }]}>
+                        <Text style={styles.avatarText}>{f.elder.name.slice(0, 1)}</Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.name}>{f.elder.name}</Text>
+                        <Text style={styles.meta}>{f.elder.relation}</Text>
+                      </View>
+                      <Icon name="chevron-forward" size={22} color={colors.muted} />
+                    </View>
+                    <View style={[styles.status, { backgroundColor: toneBg }]}>
+                      <Icon name={STATUS_ICON[tone]} size={20} color={toneColor} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.statusLabel, { color: toneColor }]}>{f.status.label}</Text>
+                        <Text style={styles.statusDetail} numberOfLines={1}>
+                          {f.status.detail}
+                        </Text>
+                      </View>
+                    </View>
+                    {f.timeline.length > 0 && <Dots items={f.timeline} />}
+                    {f.lastTalk && (
+                      <Text style={styles.talk} numberOfLines={2}>
+                        <Text style={{ fontWeight: "700", color: colors.ink }}>{t(lang, "lastTalk")}: </Text>
+                        {f.lastTalk.summary}
+                      </Text>
+                    )}
+                  </Card>
+                </Pressable>
               );
             })}
-          </View>
-        );
-      })}
+          </>
+        )}
 
-      <TouchableOpacity style={{ marginTop: 16, alignItems: "center" }} onPress={onSignOut}>
-        <Text style={{ color: "#94a3b8", fontSize: 14 }}>{t(lang, "signOut")}</Text>
-      </TouchableOpacity>
-    </ScrollView>
-  );
-}
+        {tab === "alerts" && (
+          <>
+            <Text style={styles.h1}>{t(lang, "alerts")}</Text>
+            {alerts.length === 0 && (
+              <Card style={{ alignItems: "center", gap: 8, paddingVertical: 28 }}>
+                <Icon name="checkmark-circle" size={36} color={colors.good} />
+                <Text style={styles.sub}>{t(lang, "noAlerts")}</Text>
+              </Card>
+            )}
+            {alerts.map((a) => {
+              const urgent = a.severity === "critical";
+              const color = urgent ? colors.bad : a.severity === "warning" ? colors.warn : colors.muted;
+              return (
+                <Card key={a.id} style={{ gap: 8, borderLeftWidth: 5, borderLeftColor: color }}>
+                  <Text style={[styles.alertKind, { color }]}>
+                    {urgent ? "URGENT" : a.severity === "warning" ? "CHECK" : "FYI"} · {a.elderName.split(" ")[0]} · {ago(a.createdAt)}
+                  </Text>
+                  <Text style={styles.alertTitle}>{a.title}</Text>
+                  <Text style={styles.alertMsg}>{a.message}</Text>
+                  <Pressable
+                    onPress={async () => {
+                      await acknowledgeAlert(a.id).catch(() => {});
+                      load();
+                    }}
+                    style={styles.ack}
+                    accessibilityRole="button"
+                  >
+                    <Text style={styles.ackText}>{t(lang, "onIt")}</Text>
+                  </Pressable>
+                </Card>
+              );
+            })}
+          </>
+        )}
 
-function Stat({ label, value, color }: { label: string; value: number; color: string }) {
-  return (
-    <View style={styles.stat}>
-      <Text style={[styles.statValue, { color }]}>{value}</Text>
-      <Text style={styles.statLabel}>{label}</Text>
+        {tab === "settings" && (
+          <>
+            <Text style={styles.h1}>{t(lang, "caretakerSettings")}</Text>
+            <Card style={{ gap: 12 }}>
+              <Text style={styles.name}>{t(lang, "languageSetting")}</Text>
+              <View style={{ flexDirection: "row", gap: 10 }}>
+                {(
+                  [
+                    ["en", "English"],
+                    ["hi", "हिंदी"],
+                  ] as const
+                ).map(([value, label]) => (
+                  <Pressable key={value} onPress={() => onLang(value)} style={[styles.choice, lang === value && styles.choiceOn]}>
+                    <Text style={[styles.choiceText, lang === value && { color: colors.accent }]}>{label}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </Card>
+            <Pressable
+              onPress={() =>
+                Alert.alert(t(lang, "signOutConfirm"), undefined, [
+                  { text: t(lang, "cancel"), style: "cancel" },
+                  { text: t(lang, "signOutOnly"), style: "destructive", onPress: onSignOut },
+                ])
+              }
+              style={styles.signOut}
+            >
+              <Icon name="log-out-outline" size={20} color={colors.bad} />
+              <Text style={{ color: colors.bad, fontSize: 16, fontWeight: "700" }}>{t(lang, "signOutOnly")}</Text>
+            </Pressable>
+          </>
+        )}
+      </ScrollView>
+
+      <View style={styles.tabBar}>
+        <TabButton icon="people" label={t(lang, "family")} active={tab === "family"} onPress={() => setTab("family")} />
+        <TabButton icon="notifications" label={t(lang, "alerts")} active={tab === "alerts"} badge={urgentCount} onPress={() => setTab("alerts")} />
+        <TabButton icon="settings-outline" label={t(lang, "caretakerSettings")} active={tab === "settings"} onPress={() => setTab("settings")} />
+      </View>
     </View>
   );
 }
 
+function ParentDetail({ parent, lang, onBack, onChanged }: { parent: ElderOverview; lang: Lang; onBack: () => void; onChanged: () => void }) {
+  const [talks, setTalks] = useState<ConversationSummary[] | null>(null);
+  useEffect(() => {
+    fetchConversations(parent.elder.id)
+      .then(setTalks)
+      .catch(() => setTalks([]));
+  }, [parent.elder.id]);
+
+  return (
+    <View style={{ flex: 1, backgroundColor: colors.bg }}>
+      <ScreenHeader title={parent.elder.name} onBack={onBack} />
+      <ScrollView contentContainerStyle={{ padding: 18, gap: 14, paddingBottom: 30 }}>
+        {parent.elder.phone && (
+          <Pressable onPress={() => Linking.openURL(`tel:${parent.elder.phone}`)} style={styles.callButton} accessibilityRole="button">
+            <Icon name="call" size={20} color={colors.white} />
+            <Text style={styles.callText}>
+              {t(lang, "call")} {parent.elder.name.split(" ")[0]}
+            </Text>
+          </Pressable>
+        )}
+
+        {parent.openAlerts.map((a) => (
+          <Card key={a.id} style={{ gap: 6, borderLeftWidth: 5, borderLeftColor: a.severity === "critical" ? colors.bad : colors.warn }}>
+            <Text style={styles.alertTitle}>{a.title}</Text>
+            <Text style={styles.alertMsg}>{a.message}</Text>
+            <Pressable
+              onPress={async () => {
+                await acknowledgeAlert(a.id).catch(() => {});
+                onChanged();
+              }}
+              style={styles.ack}
+            >
+              <Text style={styles.ackText}>{t(lang, "onIt")}</Text>
+            </Pressable>
+          </Card>
+        ))}
+
+        <Card style={{ gap: 10 }}>
+          <Text style={styles.name}>{t(lang, "today")}</Text>
+          {parent.timeline.length === 0 && <Text style={styles.sub}>{t(lang, "none")}</Text>}
+          {parent.timeline.map((c) => {
+            const d = DOT[c.status] ?? DOT.PENDING;
+            return (
+              <View key={c.id} style={styles.row}>
+                <View style={[styles.dot, { backgroundColor: d.color }]}>{d.icon && <Icon name={d.icon} size={14} color={colors.white} />}</View>
+                <Text style={{ width: 76, color: colors.muted, fontWeight: "600" }}>{time12(c.time)}</Text>
+                <Text style={{ flex: 1, color: colors.ink, fontWeight: "600" }}>{c.label}</Text>
+              </View>
+            );
+          })}
+        </Card>
+
+        <Text style={[styles.name, { marginTop: 4 }]}>{t(lang, "conversations")}</Text>
+        {!talks && <ActivityIndicator color={colors.accent} />}
+        {talks?.length === 0 && <Text style={styles.sub}>{t(lang, "noTalk")}</Text>}
+        {talks?.map((c) => {
+          const mood = c.mood ? MOOD[c.mood] : null;
+          return (
+            <Card key={c.id} style={{ gap: 8 }}>
+              <View style={[styles.row, { flexWrap: "wrap", gap: 6 }]}>
+                <Text style={styles.meta}>{new Date(c.startedAt).toLocaleString("en-IN", { weekday: "short", hour: "numeric", minute: "2-digit" })}</Text>
+                {c.usedVoice && <Pill label="Voice" tone="accent" icon="mic" />}
+                {mood && <Pill label={mood.label} tone={mood.tone} />}
+                {!c.endedAt && <Pill label={t(lang, "talkingNow")} tone="good" />}
+              </View>
+              <Text style={styles.talk}>
+                {!c.endedAt && c.summary ? <Text style={{ fontWeight: "700", color: colors.accent }}>{t(lang, "soFar")} </Text> : null}
+                {c.summary ?? "…"}
+              </Text>
+              {c.concerns.length > 0 && (
+                <View style={[styles.row, { flexWrap: "wrap", gap: 6 }]}>
+                  {c.concerns.map((x) => (
+                    <Pill key={x} label={x} tone="warn" />
+                  ))}
+                </View>
+              )}
+            </Card>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+}
+
+function Dots({ items }: { items: ElderOverview["timeline"] }) {
+  return (
+    <View style={[styles.row, { flexWrap: "wrap", gap: 8 }]}>
+      {items.map((c) => {
+        const d = DOT[c.status] ?? DOT.PENDING;
+        return (
+          <View key={c.id} style={[styles.dot, { backgroundColor: d.color }]} accessibilityLabel={`${c.time} ${c.label}: ${c.status}`}>
+            {d.icon && <Icon name={d.icon} size={14} color={colors.white} />}
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+function TabButton({ icon, label, active, onPress, badge }: { icon: IconName; label: string; active: boolean; onPress: () => void; badge?: number }) {
+  return (
+    <Pressable onPress={onPress} style={styles.tab} accessibilityRole="tab" accessibilityState={{ selected: active }}>
+      <View>
+        <Icon name={icon} size={26} color={active ? colors.accent : colors.muted} />
+        {!!badge && (
+          <View style={styles.badge}>
+            <Text style={styles.badgeText}>{badge}</Text>
+          </View>
+        )}
+      </View>
+      <Text style={[styles.tabLabel, active && { color: colors.accent }]}>{label}</Text>
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#f8fafc" },
-  center: { flex: 1, alignItems: "center", justifyContent: "center" },
-  title: { fontSize: 28, fontWeight: "700", color: "#1e293b" },
-  subtitle: { fontSize: 16, color: "#64748b", marginTop: 4, marginBottom: 20 },
-  empty: { fontSize: 16, color: "#64748b" },
-  card: { backgroundColor: "#fff", borderRadius: 18, padding: 16, marginBottom: 16, borderWidth: 1, borderColor: "#e2e8f0" },
+  center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.bg },
+  h1: { fontSize: 28, fontWeight: "800", color: colors.ink, marginTop: 8 },
+  sub: { fontSize: 15, color: colors.muted },
   row: { flexDirection: "row", alignItems: "center", gap: 12 },
-  avatar: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center" },
-  avatarText: { color: "#fff", fontSize: 18, fontWeight: "700" },
-  name: { fontSize: 18, fontWeight: "700", color: "#1e293b" },
-  meta: { fontSize: 13, color: "#64748b", marginTop: 2 },
-  stats: { flexDirection: "row", gap: 8, marginTop: 14 },
-  stat: { flex: 1, backgroundColor: "#f8fafc", borderRadius: 12, paddingVertical: 10, alignItems: "center" },
-  statValue: { fontSize: 20, fontWeight: "700" },
-  statLabel: { fontSize: 12, color: "#64748b" },
-  timeline: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 14 },
-  timelineItem: { alignItems: "center", width: 44 },
+  avatar: { width: 46, height: 46, borderRadius: 23, alignItems: "center", justifyContent: "center" },
+  avatarText: { color: colors.white, fontSize: 18, fontWeight: "800" },
+  name: { fontSize: 17, fontWeight: "700", color: colors.ink },
+  meta: { fontSize: 13, color: colors.muted },
+  status: { flexDirection: "row", alignItems: "center", gap: 10, borderRadius: radius.sm, padding: 12 },
+  statusLabel: { fontSize: 15, fontWeight: "800" },
+  statusDetail: { fontSize: 14, color: colors.ink, marginTop: 1 },
+  talk: { fontSize: 14, color: colors.muted, lineHeight: 20 },
   dot: { width: 24, height: 24, borderRadius: 12, alignItems: "center", justifyContent: "center" },
-  dotText: { color: "#fff", fontSize: 12, fontWeight: "700" },
-  dotLabel: { fontSize: 10, color: "#94a3b8", marginTop: 2 },
-  talk: { marginTop: 14, backgroundColor: "#f8fafc", borderRadius: 12, padding: 12 },
-  talkTitle: { fontSize: 13, fontWeight: "700", color: "#475569" },
-  moodPill: { fontSize: 12, fontWeight: "700", borderRadius: 999, paddingHorizontal: 8, paddingVertical: 2, overflow: "hidden" },
-  talkText: { fontSize: 14, color: "#334155", marginTop: 6, lineHeight: 20 },
-  concerns: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 8 },
-  concern: { fontSize: 12, fontWeight: "600", color: "#b45309", backgroundColor: "#fffbeb", borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2, overflow: "hidden" },
-  alert: { flexDirection: "row", alignItems: "center", gap: 10, borderRadius: 12, padding: 12, marginTop: 10 },
-  alertLabel: { fontSize: 13, fontWeight: "700" },
-  alertMessage: { fontSize: 14, color: "#334155", marginTop: 2 },
-  ackButton: { backgroundColor: "#fff", borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8, borderWidth: 1, borderColor: "#e2e8f0" },
-  ackText: { fontSize: 13, fontWeight: "600", color: "#334155" },
+  alertKind: { fontSize: 12, fontWeight: "800" },
+  alertTitle: { fontSize: 16, fontWeight: "700", color: colors.ink },
+  alertMsg: { fontSize: 14, color: colors.muted, lineHeight: 20 },
+  ack: { alignSelf: "flex-start", borderWidth: 1, borderColor: colors.line, borderRadius: radius.sm, paddingHorizontal: 14, paddingVertical: 9, marginTop: 4, backgroundColor: colors.surface },
+  ackText: { fontSize: 14, fontWeight: "700", color: colors.ink },
+  choice: { flex: 1, minHeight: 56, borderRadius: radius.md, borderWidth: 2, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
+  choiceOn: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
+  choiceText: { fontSize: 18, fontWeight: "800", color: colors.ink },
+  signOut: { flexDirection: "row", gap: 8, alignItems: "center", justifyContent: "center", paddingVertical: 18 },
+  callButton: { flexDirection: "row", gap: 10, alignItems: "center", justifyContent: "center", backgroundColor: colors.accent, borderRadius: radius.md, minHeight: 56 },
+  callText: { color: colors.white, fontSize: 17, fontWeight: "800" },
+  tabBar: { flexDirection: "row", borderTopWidth: 1, borderTopColor: colors.line, backgroundColor: colors.surface, paddingBottom: 6 },
+  tab: { flex: 1, alignItems: "center", paddingVertical: 8, gap: 2 },
+  tabLabel: { fontSize: 12, fontWeight: "700", color: colors.muted },
+  badge: { position: "absolute", top: -4, right: -10, backgroundColor: colors.bad, borderRadius: 9, minWidth: 18, paddingHorizontal: 4, alignItems: "center" },
+  badgeText: { color: colors.white, fontSize: 11, fontWeight: "800" },
 });

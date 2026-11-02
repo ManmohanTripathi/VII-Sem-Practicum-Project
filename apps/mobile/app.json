@@ -29,7 +29,8 @@
           "microphonePermission": "CareCircle uses the microphone so you can talk to your companion."
         }
       ],
-      "expo-asset"
+      "expo-asset",
+      "expo-font"
     ],
     "extra": {
       "eas": {

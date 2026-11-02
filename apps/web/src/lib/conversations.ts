@@ -103,15 +103,37 @@ async function llmSummary(name: string, transcript: string): Promise<Conversatio
   return parseSummaryJson(raw);
 }
 
-export async function finishConversation(id: string, now = new Date()) {
-  const convo = await prisma.conversation.findUnique({
+type ConvoWithMessages = NonNullable<Awaited<ReturnType<typeof loadConversation>>>;
+
+function loadConversation(id: string) {
+  return prisma.conversation.findUnique({
     where: { id },
     include: { elder: true, messages: { orderBy: { createdAt: "asc" } } },
   });
+}
+
+async function summarize(convo: ConvoWithMessages) {
+  const name = convo.elder.name.split(" ")[0];
+  const userMessages = convo.messages.filter((m) => m.role === "user").map((m) => m.content);
+  const transcript = convo.messages.map((m) => `${m.role === "user" ? name : "Companion"}: ${m.content}`).join("\n");
+  const fromLlm = await llmSummary(name, transcript);
+  const rules = ruleSummary(name, userMessages);
+  const result = fromLlm ?? rules;
+  // Health complaints always show as "unwell" to caregivers, whatever the model judged.
+  if (rules.mood === "unwell") result.mood = "unwell";
+  return {
+    summary: result.summary,
+    mood: result.mood,
+    concerns: JSON.stringify(result.concerns),
+    summarizedBy: fromLlm ? "llm" : "rules",
+  };
+}
+
+export async function finishConversation(id: string, now = new Date()) {
+  const convo = await loadConversation(id);
   if (!convo || convo.endedAt) return convo;
 
-  const userMessages = convo.messages.filter((m) => m.role === "user").map((m) => m.content);
-  if (!userMessages.length) {
+  if (!convo.messages.some((m) => m.role === "user")) {
     await prisma.conversation.delete({ where: { id } });
     return null;
   }
@@ -120,25 +142,30 @@ export async function finishConversation(id: string, now = new Date()) {
   const claimed = await prisma.conversation.updateMany({ where: { id, endedAt: null }, data: { endedAt: now } });
   if (!claimed.count) return convo;
 
-  const name = convo.elder.name.split(" ")[0];
-  const transcript = convo.messages.map((m) => `${m.role === "user" ? name : "Companion"}: ${m.content}`).join("\n");
-  const fromLlm = await llmSummary(name, transcript);
-  const rules = ruleSummary(name, userMessages);
-  const result = fromLlm ?? rules;
-  // Health complaints always show as "unwell" to caregivers, whatever the model judged.
-  if (rules.mood === "unwell") result.mood = "unwell";
-
-  const updated = await prisma.conversation.update({
-    where: { id },
-    data: {
-      summary: result.summary,
-      mood: result.mood,
-      concerns: JSON.stringify(result.concerns),
-      summarizedBy: fromLlm ? "llm" : "rules",
-    },
-  });
-  emitCareEvent({ elderId: convo.elderId, type: "conversation.summarized", payload: { id, mood: result.mood } });
+  const updated = await prisma.conversation.update({ where: { id }, data: await summarize(convo) });
+  emitCareEvent({ elderId: convo.elderId, type: "conversation.summarized", payload: { id, mood: updated.mood } });
   return updated;
+}
+
+const g = globalThis as unknown as { ccSummarizing?: Set<string> };
+const inFlight = (g.ccSummarizing ??= new Set());
+
+// "Summary so far" while the conversation is still going, so caregivers don't wait for it to end.
+// Skips if a refresh for the same conversation is already running (the next message triggers another).
+export async function refreshConversationSummary(id: string) {
+  if (inFlight.has(id)) return null;
+  inFlight.add(id);
+  try {
+    const convo = await loadConversation(id);
+    if (!convo || convo.endedAt || !convo.messages.some((m) => m.role === "user")) return null;
+    const data = await summarize(convo);
+    // Only write if it's still open (finishConversation may have finalised it meanwhile).
+    const res = await prisma.conversation.updateMany({ where: { id, endedAt: null }, data });
+    if (res.count) emitCareEvent({ elderId: convo.elderId, type: "conversation.summarized", payload: { id, mood: data.mood } });
+    return res.count ? data : null;
+  } finally {
+    inFlight.delete(id);
+  }
 }
 
 // Called by the app when the senior leaves the talk screen.

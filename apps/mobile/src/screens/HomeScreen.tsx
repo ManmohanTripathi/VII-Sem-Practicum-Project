@@ -1,17 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  ActivityIndicator,
-  Alert,
-  AppState,
-  Pressable,
-  RefreshControl,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ActivityIndicator, Alert, AppState, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import {
   DueAnnouncement,
   errorMessage,
@@ -32,43 +21,45 @@ import {
   cancelLocalReminders,
   ensureNotificationPermission,
   getPushToken,
-  notificationsAvailable,
   setupAndroidChannel,
   syncDailyReminderNotifications,
 } from "../notifications";
 import { Lang, t } from "../i18n";
 import { useVoiceTalk } from "../useVoiceTalk";
 import { SaathiAvatar } from "../components/SaathiAvatar";
+import { BigButton } from "../ui/BigButton";
+import { Card } from "../ui/Card";
+import { Icon, type IconName } from "../ui/Icon";
+import { colors, radius, sizes } from "../ui/theme";
 
-const TYPE_EMOJI: Record<string, string> = {
-  MEDICINE: "💊",
-  MEAL: "🍽️",
-  SLEEP: "🌙",
-  WAKE: "☀️",
-  CUSTOM: "🔔",
-};
-
-const MOODS: { key: Mood; emoji: string; label: "great" | "okay" | "notGreat" }[] = [
-  { key: "great", emoji: "😄", label: "great" },
-  { key: "okay", emoji: "🙂", label: "okay" },
-  { key: "not_great", emoji: "😕", label: "notGreat" },
-];
+const TYPE_ICON: Record<string, IconName> = { MEDICINE: "medkit", MEAL: "restaurant", SLEEP: "moon", WAKE: "sunny", CUSTOM: "notifications" };
 
 const ANNOUNCED_KEY = "carecircle:announced";
 const DUE_POLL_MS = 15_000;
 const TODAY_POLL_MS = 60_000;
 
+function time12(hhmm: string) {
+  const [h, m] = hhmm.split(":").map(Number);
+  return `${h % 12 === 0 ? 12 : h % 12}:${String(m).padStart(2, "0")} ${h >= 12 ? "PM" : "AM"}`;
+}
+
+type Question = { kind: "MOOD" | string; question: string; options: { answer: string; emoji: string; label: string }[] };
+
+// Patient home: Saathi, one talk button, one reminder card, one question, three tiles. Nothing else.
 export function HomeScreen({
   lang,
-  onChangeLang,
+  largeText,
+  readAloud,
+  onOpen,
   onSwitchProfile,
-  onOpenChat,
 }: {
   lang: Lang;
-  onChangeLang: (lang: Lang) => void;
+  largeText: boolean;
+  readAloud: boolean;
+  onOpen: (screen: "reminders" | "chat" | "settings") => void;
   onSwitchProfile: () => void;
-  onOpenChat: () => void;
 }) {
+  const fs = sizes(largeText);
   const [elderName, setElderName] = useState("");
   const [items, setItems] = useState<TodayItem[]>([]);
   const [prompts, setPrompts] = useState<Prompt[]>([]);
@@ -76,7 +67,7 @@ export function HomeScreen({
   const [due, setDue] = useState<DueAnnouncement[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [lastTurn, setLastTurn] = useState<{ heard: string; reply: string } | null>(null);
+  const [caption, setCaption] = useState<{ heard?: string; text: string } | null>(null);
   const pushSetUp = useRef(false);
   const announced = useRef<Set<string>>(new Set());
 
@@ -87,10 +78,8 @@ export function HomeScreen({
       setItems(data.items);
       setPrompts(data.prompts);
       setMoodToday(data.moodToday);
-
       if (!pushSetUp.current) {
         pushSetUp.current = true;
-        // Prefer server push; without a push token fall back to local daily notifications.
         const token = await getPushToken();
         if (token) {
           await registerSeniorPushToken(token);
@@ -111,21 +100,20 @@ export function HomeScreen({
     }
   }, [onSwitchProfile]);
 
-  // Voice turns may answer a reminder ("haan le li"), so refresh after each one.
   const onTurn = useCallback(
     (turn: VoiceReply) => {
-      setLastTurn({ heard: turn.transcript, reply: turn.reply });
+      setCaption({ heard: turn.transcript, text: turn.reply });
       loadToday().catch(() => {});
       fetchDue().then(setDue).catch(() => {});
     },
     [loadToday]
   );
   const voice = useVoiceTalk(lang, onTurn);
-  const { speak } = voice; // stable callback; `voice` itself is a new object every render
+  const { speak } = voice;
   const phaseRef = useRef(voice.phase);
   phaseRef.current = voice.phase;
 
-  // Poll for due reminders and speak each new one once, by itself.
+  // Speak each newly due reminder once, by itself.
   const checkDue = useCallback(async () => {
     let list: DueAnnouncement[];
     try {
@@ -138,7 +126,7 @@ export function HomeScreen({
     if (!next || phaseRef.current !== "idle") return;
     announced.current.add(next.key);
     AsyncStorage.setItem(ANNOUNCED_KEY, JSON.stringify([...announced.current].slice(-60))).catch(() => {});
-    setLastTurn({ heard: "", reply: next.text });
+    setCaption({ text: next.text });
     await speak(next.text, next.audioUrl);
   }, [speak]);
 
@@ -152,10 +140,7 @@ export function HomeScreen({
     loadToday()
       .catch((e) => Alert.alert("Couldn't load today", errorMessage(e, "Please try again.")))
       .finally(() => setLoading(false));
-
-    const dueTimer = setInterval(() => {
-      if (AppState.currentState === "active") checkDue();
-    }, DUE_POLL_MS);
+    const dueTimer = setInterval(() => AppState.currentState === "active" && checkDue(), DUE_POLL_MS);
     const todayTimer = setInterval(() => loadToday().catch(() => {}), TODAY_POLL_MS);
     const sub = AppState.addEventListener("change", (s) => {
       if (s === "active") {
@@ -170,16 +155,10 @@ export function HomeScreen({
     };
   }, [checkDue, loadToday]);
 
-  async function handleRefresh() {
-    setRefreshing(true);
-    await Promise.all([loadToday().catch(() => {}), checkDue()]);
-    setRefreshing(false);
-  }
-
-  function say(message: string | null | undefined) {
+  function confirmMessage(message: string | null | undefined) {
     if (!message) return;
-    setLastTurn({ heard: "", reply: message });
-    voice.speak(message, null);
+    setCaption({ text: message });
+    if (readAloud) speak(message, null);
   }
 
   async function answer(checkInId: string, yes: boolean) {
@@ -187,27 +166,39 @@ export function HomeScreen({
       const { checkIn, message } = await respondToCheckIn(checkInId, yes ? "yes" : "no");
       setItems((prev) => prev.map((i) => (i.checkIn.id === checkInId ? { ...i, checkIn } : i)));
       setDue((d) => d.filter((x) => x.checkInId !== checkInId));
-      say(message);
+      confirmMessage(message);
     } catch (e) {
       Alert.alert("Couldn't save", errorMessage(e, "Please try again."));
     }
   }
 
-  async function pickMood(mood: Mood) {
-    try {
-      const { message } = await submitMood(mood);
-      setMoodToday(mood);
-      say(message ?? t(lang, "thanksMood"));
-    } catch (e) {
-      Alert.alert("Couldn't save", errorMessage(e, "Please try again."));
+  // One question at a time: today's mood first, then the quick wellbeing prompts.
+  const question: Question | null = useMemo(() => {
+    if (!moodToday) {
+      return {
+        kind: "MOOD",
+        question: t(lang, "feeling"),
+        options: [
+          { answer: "great", emoji: "😄", label: t(lang, "great") },
+          { answer: "okay", emoji: "🙂", label: t(lang, "okay") },
+          { answer: "not_great", emoji: "😕", label: t(lang, "notGreat") },
+        ],
+      };
     }
-  }
+    return prompts[0] ?? null;
+  }, [moodToday, prompts, lang]);
 
-  async function answerPrompt(prompt: Prompt, answerValue: string) {
+  async function answerQuestion(q: Question, value: string) {
     try {
-      const { message } = await submitSelfReport(prompt.kind, answerValue);
-      setPrompts((p) => p.filter((x) => x.kind !== prompt.kind));
-      say(message ?? t(lang, "thanksMood"));
+      if (q.kind === "MOOD") {
+        const { message } = await submitMood(value as Mood);
+        setMoodToday(value as Mood);
+        confirmMessage(message ?? t(lang, "thanksMood"));
+      } else {
+        const { message } = await submitSelfReport(q.kind, value);
+        setPrompts((p) => p.filter((x) => x.kind !== q.kind));
+        confirmMessage(message ?? t(lang, "thanksMood"));
+      }
     } catch (e) {
       Alert.alert("Couldn't save", errorMessage(e, "Please try again."));
     }
@@ -222,7 +213,8 @@ export function HomeScreen({
         onPress: async () => {
           try {
             const { message } = await requestHelp();
-            say(message);
+            setCaption({ text: message });
+            speak(message, null);
           } catch (e) {
             Alert.alert("Couldn't reach your family", errorMessage(e, "Please call them directly."));
           }
@@ -234,7 +226,7 @@ export function HomeScreen({
   if (loading) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" color="#4f46e5" />
+        <ActivityIndicator size="large" color={colors.accent} />
       </View>
     );
   }
@@ -244,29 +236,47 @@ export function HomeScreen({
   const phase = voice.phase;
   const talkLabel =
     phase === "listening" ? t(lang, "listening") : phase === "thinking" ? t(lang, "thinking") : phase === "speaking" ? t(lang, "speaking") : t(lang, "holdToTalk");
+  const nextItem = items.find((i) => i.checkIn.status === "PENDING" && new Date(i.checkIn.scheduledFor).getTime() > Date.now());
+  const dueNow = due[0];
 
   return (
     <ScrollView
-      style={styles.container}
-      contentContainerStyle={{ padding: 20, paddingTop: 56, paddingBottom: 60 }}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
+      style={styles.screen}
+      contentContainerStyle={styles.content}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={async () => {
+            setRefreshing(true);
+            await Promise.all([loadToday().catch(() => {}), checkDue()]);
+            setRefreshing(false);
+          }}
+        />
+      }
     >
-      <Text style={styles.greeting}>
-        {greeting}, {elderName.split(" ")[0]}!
-      </Text>
-      <Text style={styles.date}>
-        {new Date().toLocaleDateString(lang === "hi" ? "hi-IN" : "en-IN", { weekday: "long", month: "long", day: "numeric" })}
-      </Text>
+      <View style={styles.topRow}>
+        <View style={{ flex: 1 }}>
+          <Text style={[styles.greeting, { fontSize: fs.xxl }]} numberOfLines={2}>
+            {greeting}, {elderName.split(" ")[0]}
+          </Text>
+          <Text style={[styles.date, { fontSize: fs.sm }]}>
+            {new Date().toLocaleDateString(lang === "hi" ? "hi-IN" : "en-IN", { weekday: "long", day: "numeric", month: "long" })}
+          </Text>
+        </View>
+        <Pressable onPress={() => onOpen("settings")} style={styles.gear} accessibilityRole="button" accessibilityLabel={t(lang, "settings")} hitSlop={10}>
+          <Icon name="settings-outline" size={26} color={colors.muted} />
+        </Pressable>
+      </View>
 
-      {/* Saathi: talk right from the home screen */}
-      <View style={styles.hero}>
-        <SaathiAvatar phase={phase} size={130} />
-        <Text style={styles.caption} numberOfLines={4}>
-          {lastTurn?.reply ?? t(lang, "talkCaption")}
+      {/* Saathi */}
+      <Card style={styles.hero}>
+        <SaathiAvatar phase={phase} size={120} />
+        <Text style={[styles.caption, { fontSize: fs.lg }]} numberOfLines={5}>
+          {caption?.text ?? t(lang, "talkCaption")}
         </Text>
-        {lastTurn?.heard ? (
-          <Text style={styles.heard} numberOfLines={2}>
-            {t(lang, "youSaid")}: “{lastTurn.heard}”
+        {caption?.heard ? (
+          <Text style={[styles.heard, { fontSize: fs.sm }]} numberOfLines={2}>
+            {t(lang, "youSaid")}: “{caption.heard}”
           </Text>
         ) : null}
         <Pressable
@@ -277,230 +287,157 @@ export function HomeScreen({
           accessibilityRole="button"
           accessibilityLabel={talkLabel}
           style={({ pressed }) => [
-            styles.talkButton,
-            phase === "listening" && { backgroundColor: "#e11d48" },
-            phase === "thinking" && { backgroundColor: "#94a3b8" },
-            phase === "speaking" && { backgroundColor: "#059669" },
-            pressed && phase === "idle" && { transform: [{ scale: 0.97 }] },
+            styles.talk,
+            phase === "listening" && { backgroundColor: colors.bad },
+            phase === "thinking" && { backgroundColor: colors.muted },
+            phase === "speaking" && { backgroundColor: colors.good },
+            pressed && phase === "idle" && { transform: [{ scale: 0.98 }] },
           ]}
         >
-          <Text style={styles.talkText}>
-            {phase === "speaking" ? "🔊" : "🎙️"}  {talkLabel}
-          </Text>
+          <Icon name={phase === "speaking" ? "volume-high" : phase === "listening" ? "radio-button-on" : "mic"} size={28} color={colors.white} />
+          <Text style={[styles.talkText, { fontSize: fs.lg }]}>{talkLabel}</Text>
         </Pressable>
-      </View>
+      </Card>
 
-      {/* Reminders that are due right now (also spoken aloud automatically) */}
-      {due.map((d) => (
-        <View key={d.key} style={styles.dueCard}>
-          <View style={styles.cardHeader}>
-            <Text style={styles.cardEmoji}>{TYPE_EMOJI[d.type] ?? "🔔"}</Text>
+      {/* One reminder card */}
+      {dueNow ? (
+        <Card style={[styles.block, styles.dueCard]}>
+          <View style={styles.rowCenter}>
+            <View style={[styles.iconBubble, { backgroundColor: colors.warnSoft }]}>
+              <Icon name={TYPE_ICON[dueNow.type] ?? "notifications"} size={26} color={colors.warn} />
+            </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.dueTitle}>{t(lang, "dueNow")}</Text>
-              <Text style={styles.cardLabel}>{d.label}</Text>
+              <Text style={[styles.dueTitle, { fontSize: fs.sm }]}>{t(lang, "dueNow")}</Text>
+              <Text style={[styles.cardTitle, { fontSize: fs.lg }]}>{dueNow.label}</Text>
             </View>
-            <TouchableOpacity onPress={() => voice.speak(d.text, d.audioUrl)} accessibilityLabel="Repeat">
-              <Text style={styles.speaker}>🔊</Text>
-            </TouchableOpacity>
+            <Pressable onPress={() => speak(dueNow.text, dueNow.audioUrl)} hitSlop={10} accessibilityLabel="Repeat">
+              <Icon name="volume-high" size={28} color={colors.warn} />
+            </Pressable>
           </View>
-          <Text style={styles.cardQuestion}>{d.text}</Text>
-          <View style={styles.answerRow}>
-            <TouchableOpacity style={[styles.answerButton, styles.yesButton]} onPress={() => answer(d.checkInId, true)}>
-              <Text style={styles.answerButtonText}>{t(lang, "yes")}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[styles.answerButton, styles.noButton]} onPress={() => answer(d.checkInId, false)}>
-              <Text style={[styles.answerButtonText, { color: "#334155" }]}>{t(lang, "notYet")}</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      ))}
-
-      <View style={styles.actionRow}>
-        <TouchableOpacity style={[styles.actionButton, styles.chatButton]} onPress={onOpenChat}>
-          <Text style={[styles.actionText, { color: "#3730a3" }]}>{t(lang, "openChat")}</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={[styles.actionButton, styles.helpButton]} onPress={askForHelp}>
-          <Text style={styles.actionText}>{t(lang, "help")}</Text>
-        </TouchableOpacity>
-      </View>
-
-      {!notificationsAvailable() && (
-        <View style={styles.notice}>
-          <Text style={styles.noticeText}>{t(lang, "noPopups")}</Text>
-        </View>
-      )}
-
-      {!moodToday && (
-        <>
-          <Text style={styles.sectionTitle}>{t(lang, "feeling")}</Text>
-          <View style={styles.moodRow}>
-            {MOODS.map((m) => (
-              <TouchableOpacity key={m.key} style={styles.moodButton} onPress={() => pickMood(m.key)}>
-                <Text style={styles.moodEmoji}>{m.emoji}</Text>
-                <Text style={styles.moodLabel}>{t(lang, m.label)}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </>
-      )}
-
-      {prompts.length > 0 && (
-        <>
-          <Text style={styles.sectionTitle}>{t(lang, "quickQuestions")}</Text>
-          {prompts.map((p) => (
-            <View key={p.kind} style={styles.card}>
-              <TouchableOpacity onPress={() => voice.speak(p.question, null)}>
-                <Text style={styles.promptQuestion}>{p.question}</Text>
-              </TouchableOpacity>
-              <View style={styles.answerRow}>
-                {p.options.map((o) => (
-                  <TouchableOpacity key={o.answer} style={[styles.answerButton, styles.optionButton]} onPress={() => answerPrompt(p, o.answer)}>
-                    <Text style={styles.optionText}>
-                      {o.emoji} {o.label}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
+          <View style={styles.twoButtons}>
+            <View style={{ flex: 1 }}>
+              <BigButton label={t(lang, "yes")} variant="good" icon="checkmark-circle" fontSize={fs.md} onPress={() => answer(dueNow.checkInId, true)} />
             </View>
-          ))}
-        </>
-      )}
-
-      <Text style={styles.sectionTitle}>{t(lang, "checkins")}</Text>
-      {items.length === 0 && <Text style={styles.empty}>{t(lang, "none")}</Text>}
-
-      {items.map((item) => {
-        const { status, response } = item.checkIn;
-        const done = status.startsWith("DONE");
-        const missed = status === "MISSED";
-        const notYet = status === "PENDING" && response === "not_yet";
-        return (
-          <View key={item.checkIn.id} style={styles.card}>
-            <View style={styles.cardHeader}>
-              <Text style={styles.cardEmoji}>{TYPE_EMOJI[item.reminder.type] ?? "🔔"}</Text>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.cardTime}>{item.reminder.time}</Text>
-                <Text style={styles.cardLabel}>{item.reminder.label}</Text>
-              </View>
-              <TouchableOpacity onPress={() => voice.speak(item.reminder.question, null)} accessibilityLabel="Read aloud">
-                <Text style={styles.speaker}>🔊</Text>
-              </TouchableOpacity>
+            <View style={{ flex: 1 }}>
+              <BigButton label={t(lang, "notYet")} variant="secondary" fontSize={fs.md} onPress={() => answer(dueNow.checkInId, false)} />
             </View>
-            <Text style={styles.cardQuestion}>{item.reminder.question}</Text>
-
-            {done ? (
-              <View style={[styles.answeredPill, styles.pillYes]}>
-                <Text style={styles.answeredText}>{t(lang, "done")}</Text>
-              </View>
-            ) : missed || notYet ? (
+          </View>
+        </Card>
+      ) : (
+        <Card style={[styles.block, styles.rowCenter]}>
+          <View style={[styles.iconBubble, { backgroundColor: nextItem ? colors.accentSoft : colors.goodSoft }]}>
+            <Icon name={nextItem ? TYPE_ICON[nextItem.reminder.type] ?? "alarm" : "checkmark-circle"} size={26} color={nextItem ? colors.accent : colors.good} />
+          </View>
+          <View style={{ flex: 1 }}>
+            {nextItem ? (
               <>
-                <Text style={missed ? styles.missedText : styles.notYetText}>{missed ? t(lang, "missed") : t(lang, "willRemind")}</Text>
-                <TouchableOpacity style={[styles.answerButton, styles.yesButton]} onPress={() => answer(item.checkIn.id, true)}>
-                  <Text style={styles.answerButtonText}>{t(lang, "tookItNow")}</Text>
-                </TouchableOpacity>
+                <Text style={[styles.muted, { fontSize: fs.sm }]}>
+                  {t(lang, "nextUp")} · {time12(nextItem.reminder.time)}
+                </Text>
+                <Text style={[styles.cardTitle, { fontSize: fs.lg }]}>{nextItem.reminder.label}</Text>
               </>
             ) : (
-              <View style={styles.answerRow}>
-                <TouchableOpacity style={[styles.answerButton, styles.yesButton]} onPress={() => answer(item.checkIn.id, true)}>
-                  <Text style={styles.answerButtonText}>{t(lang, "yes")}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={[styles.answerButton, styles.noButton]} onPress={() => answer(item.checkIn.id, false)}>
-                  <Text style={[styles.answerButtonText, { color: "#334155" }]}>{t(lang, "notYet")}</Text>
-                </TouchableOpacity>
-              </View>
+              <Text style={[styles.cardTitle, { fontSize: fs.md }]}>{items.length ? t(lang, "allDoneToday") : t(lang, "none")}</Text>
             )}
           </View>
-        );
-      })}
+        </Card>
+      )}
 
-      <TouchableOpacity style={styles.footerLink} onPress={() => onChangeLang(lang === "hi" ? "en" : "hi")}>
-        <Text style={styles.langText}>{t(lang, "language")}</Text>
-      </TouchableOpacity>
-      <TouchableOpacity style={styles.footerLink} onPress={onSwitchProfile}>
-        <Text style={styles.switchProfileText}>{t(lang, "switch")}</Text>
-      </TouchableOpacity>
+      {/* One question at a time */}
+      {question && (
+        <Card style={styles.block}>
+          <Pressable onPress={() => speak(question.question, null)} accessibilityRole="button">
+            <Text style={[styles.question, { fontSize: fs.lg }]}>{question.question}</Text>
+          </Pressable>
+          <View style={styles.options}>
+            {question.options.map((o) => (
+              <Pressable
+                key={o.answer}
+                onPress={() => answerQuestion(question, o.answer)}
+                style={({ pressed }) => [styles.option, pressed && { backgroundColor: colors.accentSoft }]}
+                accessibilityRole="button"
+                accessibilityLabel={o.label}
+              >
+                <Text style={{ fontSize: 30 }}>{o.emoji}</Text>
+                <Text style={[styles.optionLabel, { fontSize: fs.sm }]}>{o.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+        </Card>
+      )}
+
+      {/* Three tiles */}
+      <View style={styles.tiles}>
+        <Tile icon="alarm" label={t(lang, "remindersTile")} fontSize={fs.md} onPress={() => onOpen("reminders")} />
+        <Tile icon="chatbubble-ellipses" label={t(lang, "chatTile")} fontSize={fs.md} onPress={() => onOpen("chat")} />
+        <Tile icon="call" label={t(lang, "helpTile")} fontSize={fs.md} onPress={askForHelp} danger />
+      </View>
     </ScrollView>
   );
 }
 
+function Tile({ icon, label, onPress, danger, fontSize }: { icon: IconName; label: string; onPress: () => void; danger?: boolean; fontSize: number }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      style={({ pressed }) => [styles.tile, danger && { backgroundColor: colors.bad, borderColor: colors.bad }, pressed && { opacity: 0.85, transform: [{ scale: 0.97 }] }]}
+    >
+      <Icon name={icon} size={32} color={danger ? colors.white : colors.accent} />
+      <Text style={[styles.tileLabel, { fontSize }, danger && { color: colors.white }]} numberOfLines={1}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#f8fafc" },
-  center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#f8fafc" },
-  greeting: { fontSize: 30, fontWeight: "700", color: "#1e293b" },
-  date: { fontSize: 16, color: "#64748b", marginTop: 4 },
-  hero: {
-    marginTop: 16,
-    backgroundColor: "#fff",
-    borderRadius: 24,
-    paddingVertical: 8,
-    paddingHorizontal: 18,
-    paddingBottom: 18,
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-  },
-  caption: { fontSize: 19, lineHeight: 27, color: "#1e293b", textAlign: "center", fontWeight: "600", minHeight: 54 },
-  heard: { fontSize: 14, color: "#64748b", marginTop: 6, textAlign: "center" },
-  talkButton: {
+  screen: { flex: 1, backgroundColor: colors.bg },
+  content: { padding: 18, paddingTop: 12, paddingBottom: 40, gap: 14 },
+  center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.bg },
+  topRow: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
+  greeting: { fontWeight: "800", color: colors.ink },
+  date: { color: colors.muted, marginTop: 2 },
+  gear: { width: 48, height: 48, borderRadius: 24, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
+  hero: { alignItems: "center", paddingTop: 4, paddingBottom: 18, borderRadius: radius.lg },
+  caption: { color: colors.ink, textAlign: "center", fontWeight: "600", lineHeight: 28, minHeight: 56, paddingHorizontal: 4 },
+  heard: { color: colors.muted, textAlign: "center", marginTop: 6 },
+  talk: {
     marginTop: 16,
     alignSelf: "stretch",
-    backgroundColor: "#4f46e5",
-    borderRadius: 20,
-    paddingVertical: 22,
+    minHeight: 72,
+    borderRadius: radius.lg,
+    backgroundColor: colors.accent,
+    flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
   },
-  talkText: { color: "#fff", fontSize: 21, fontWeight: "800" },
-  dueCard: {
-    marginTop: 16,
-    backgroundColor: "#fffbeb",
-    borderRadius: 18,
-    padding: 18,
-    borderWidth: 2,
-    borderColor: "#f59e0b",
-  },
-  dueTitle: { fontSize: 15, fontWeight: "800", color: "#b45309" },
-  actionRow: { flexDirection: "row", gap: 12, marginTop: 16 },
-  actionButton: { flex: 1, borderRadius: 16, paddingVertical: 18, alignItems: "center" },
-  chatButton: { backgroundColor: "#eef2ff" },
-  helpButton: { backgroundColor: "#e11d48" },
-  actionText: { color: "#fff", fontSize: 17, fontWeight: "700" },
-  notice: { backgroundColor: "#fef3c7", borderRadius: 12, padding: 14, marginTop: 16 },
-  noticeText: { fontSize: 14, color: "#92400e", lineHeight: 20 },
-  sectionTitle: { fontSize: 20, fontWeight: "700", color: "#334155", marginTop: 28, marginBottom: 12 },
-  moodRow: { flexDirection: "row", gap: 12, justifyContent: "space-between" },
-  moodButton: {
+  talkText: { color: colors.white, fontWeight: "800" },
+  block: { gap: 14 },
+  dueCard: { backgroundColor: "#FFFBF3", borderColor: "#F3D9A8", borderWidth: 2 },
+  rowCenter: { flexDirection: "row", alignItems: "center", gap: 14 },
+  iconBubble: { width: 52, height: 52, borderRadius: 26, alignItems: "center", justifyContent: "center" },
+  dueTitle: { color: colors.warn, fontWeight: "800" },
+  cardTitle: { color: colors.ink, fontWeight: "700" },
+  muted: { color: colors.muted, fontWeight: "600" },
+  twoButtons: { flexDirection: "row", gap: 12 },
+  question: { color: colors.ink, fontWeight: "700", lineHeight: 28 },
+  options: { flexDirection: "row", gap: 10 },
+  option: { flex: 1, alignItems: "center", paddingVertical: 14, borderRadius: radius.md, borderWidth: 1.5, borderColor: colors.line, backgroundColor: colors.surface },
+  optionLabel: { marginTop: 4, color: colors.ink, fontWeight: "700", textAlign: "center" },
+  tiles: { flexDirection: "row", gap: 12 },
+  tile: {
     flex: 1,
-    backgroundColor: "#fff",
-    borderRadius: 16,
-    paddingVertical: 16,
+    minHeight: 104,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface,
+    borderWidth: 1.5,
+    borderColor: colors.line,
     alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
+    justifyContent: "center",
+    gap: 8,
   },
-  moodEmoji: { fontSize: 32 },
-  moodLabel: { marginTop: 6, fontSize: 14, fontWeight: "600", color: "#475569" },
-  empty: { fontSize: 16, color: "#64748b" },
-  card: { backgroundColor: "#fff", borderRadius: 18, padding: 18, marginBottom: 16, borderWidth: 1, borderColor: "#e2e8f0" },
-  cardHeader: { flexDirection: "row", alignItems: "center", gap: 12 },
-  cardEmoji: { fontSize: 34 },
-  cardTime: { fontSize: 14, color: "#94a3b8", fontWeight: "600" },
-  cardLabel: { fontSize: 20, fontWeight: "700", color: "#1e293b" },
-  speaker: { fontSize: 26, padding: 4 },
-  cardQuestion: { fontSize: 18, color: "#334155", marginTop: 14, marginBottom: 16, lineHeight: 25 },
-  promptQuestion: { fontSize: 19, fontWeight: "600", color: "#1e293b", marginBottom: 14 },
-  answerRow: { flexDirection: "row", gap: 12 },
-  answerButton: { flex: 1, borderRadius: 14, paddingVertical: 16, alignItems: "center" },
-  yesButton: { backgroundColor: "#16a34a" },
-  noButton: { backgroundColor: "#f1f5f9" },
-  optionButton: { backgroundColor: "#eef2ff" },
-  optionText: { fontSize: 17, fontWeight: "700", color: "#3730a3" },
-  answerButtonText: { fontSize: 18, fontWeight: "700", color: "#fff" },
-  answeredPill: { alignSelf: "flex-start", borderRadius: 999, paddingHorizontal: 16, paddingVertical: 8 },
-  pillYes: { backgroundColor: "#dcfce7" },
-  answeredText: { fontSize: 15, fontWeight: "700", color: "#166534" },
-  missedText: { fontSize: 15, color: "#be123c", fontWeight: "600", marginBottom: 10 },
-  notYetText: { fontSize: 15, color: "#64748b", fontWeight: "600", marginBottom: 10 },
-  footerLink: { marginTop: 18, alignItems: "center" },
-  langText: { color: "#4f46e5", fontSize: 16, fontWeight: "700" },
-  switchProfileText: { color: "#94a3b8", fontSize: 14 },
+  tileLabel: { color: colors.ink, fontWeight: "700" },
 });
