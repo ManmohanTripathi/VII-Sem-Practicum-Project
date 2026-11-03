@@ -1,6 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Alert, AppState, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, AppState, Linking, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import {
   authHeaders,
   DueAnnouncement,
@@ -14,6 +14,7 @@ import {
   Mood,
   Prompt,
   registerSeniorPushToken,
+  getHelpContact,
   requestHelp,
   respondToCheckIn,
   submitMood,
@@ -73,6 +74,8 @@ export function HomeScreen({
   const [refreshing, setRefreshing] = useState(false);
   const [caption, setCaption] = useState<{ heard?: string; text: string } | null>(null);
   const [latestMsg, setLatestMsg] = useState<FamilyMessage | null>(null);
+  // A question Saathi passed to the family that nobody has answered yet.
+  const [pendingAsk, setPendingAsk] = useState<FamilyMessage | null>(null);
   const pushSetUp = useRef(false);
   const announced = useRef<Set<string>>(new Set());
   const headers = useRef<Record<string, string>>({});
@@ -109,6 +112,10 @@ export function HomeScreen({
   const onTurn = useCallback(
     (turn: VoiceReply) => {
       setCaption({ heard: turn.transcript, text: turn.reply });
+      const a = turn.askedFamily;
+      if (a) {
+        setPendingAsk({ id: a.messageId, direction: "FROM_ELDER", senderName: "", kind: "question", text: a.question, audioUrl: null, playedAt: null, createdAt: new Date().toISOString(), askedName: a.caregiverName });
+      }
       loadToday().catch(() => {});
       fetchDue().then(setDue).catch(() => {});
     },
@@ -142,6 +149,9 @@ export function HomeScreen({
     if (msgs) {
       const recent = [...msgs.messages].reverse().find((m) => m.direction === "TO_ELDER");
       setLatestMsg(recent ?? null);
+      const ask = [...msgs.messages].reverse().find((m) => m.kind === "question");
+      const answered = ask && recent && new Date(recent.createdAt) > new Date(ask.createdAt);
+      setPendingAsk(ask && !answered && Date.now() - new Date(ask.createdAt).getTime() < 24 * 3600_000 ? ask : null);
     }
     if (phaseRef.current !== "idle") return;
     const next = dueList?.find((d) => !announced.current.has(d.key));
@@ -233,19 +243,36 @@ export function HomeScreen({
     }
   }
 
-  function askForHelp() {
-    Alert.alert(t(lang, "helpConfirmTitle"), t(lang, "helpConfirmBody"), [
+  // Help: alert the whole family, then phone the chosen family member straight away.
+  async function askForHelp() {
+    const cached = await getHelpContact();
+    const who = cached?.name.split(" ")[0];
+    Alert.alert(t(lang, "helpConfirmTitle"), who ? t(lang, "helpConfirmCall").replace("{name}", who) : t(lang, "helpConfirmBody"), [
       { text: t(lang, "cancel"), style: "cancel" },
       {
-        text: t(lang, "helpYes"),
+        text: who ? t(lang, "helpYesCall").replace("{name}", who) : t(lang, "helpYes"),
         style: "destructive",
         onPress: async () => {
+          let call = cached;
+          let message: string | null = null;
           try {
-            const { message } = await requestHelp();
+            const res = await requestHelp();
+            message = res.message;
+            call = res.call ?? cached;
+          } catch (e) {
+            // No server: still call if we know who to call.
+            if (!call) {
+              Alert.alert("Couldn't reach your family", errorMessage(e, "Please call them directly."));
+              return;
+            }
+          }
+          if (call) {
+            const name = call.name.split(" ")[0];
+            setCaption({ text: t(lang, "callingName").replace("{name}", name) });
+            Linking.openURL(`tel:${call.phone}`).catch(() => Alert.alert(t(lang, "callingName").replace("{name}", name), call.phone));
+          } else if (message) {
             setCaption({ text: message });
             speak(message, null);
-          } catch (e) {
-            Alert.alert("Couldn't reach your family", errorMessage(e, "Please call them directly."));
           }
         },
       },
@@ -372,6 +399,26 @@ export function HomeScreen({
         </Card>
       )}
 
+      {/* Saathi asked the family something for them */}
+      {pendingAsk && (
+        <Card style={[styles.block, styles.askCard]}>
+          <View style={styles.rowCenter}>
+            <View style={[styles.iconBubble, { backgroundColor: "#FEF3C7" }]}>
+              <Icon name="hourglass-outline" size={26} color="#B45309" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.msgFrom, { fontSize: fs.sm, color: "#92400E" }]}>
+                {t(lang, "askedName").replace("{name}", (pendingAsk.askedName ?? t(lang, "familyTile")).split(" ")[0])}
+              </Text>
+              <Text style={[styles.cardTitle, { fontSize: fs.md }]} numberOfLines={3}>
+                {pendingAsk.text}
+              </Text>
+              <Text style={[styles.msgFrom, { fontSize: fs.xs, color: "#92400E", marginTop: 4 }]}>{t(lang, "waitingReply")}</Text>
+            </View>
+          </View>
+        </Card>
+      )}
+
       {/* Latest message from the family */}
       {latestMsg && Date.now() - new Date(latestMsg.createdAt).getTime() < 48 * 3600_000 && (
         <Card style={[styles.block, styles.msgCard]}>
@@ -494,6 +541,7 @@ const styles = StyleSheet.create({
   option: { flex: 1, alignItems: "center", paddingVertical: 14, borderRadius: radius.md, borderWidth: 1.5, borderColor: colors.line, backgroundColor: colors.surface },
   optionLabel: { marginTop: 4, color: colors.ink, fontWeight: "700", textAlign: "center" },
   tiles: { flexDirection: "row", gap: 12 },
+  askCard: { backgroundColor: "#FFFBEB", borderColor: "#FDE68A", borderWidth: 2 },
   msgCard: { backgroundColor: "#FFF7FB", borderColor: "#F9D2E5", borderWidth: 2 },
   msgFrom: { color: "#BE185D", fontWeight: "800" },
   replyBtn: { flex: 1, minHeight: 64, borderRadius: radius.md, borderWidth: 1.5, borderColor: "#F9D2E5", backgroundColor: colors.surface, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 },

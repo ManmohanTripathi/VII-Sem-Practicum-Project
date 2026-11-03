@@ -9,6 +9,7 @@ import { startOfZonedDay, zonedDayKey, zonedParts } from "@/lib/time";
 import { complete, type LlmMessage } from "@/lib/ai/llm";
 import { classifyIntent, detectScript, extractSelfReports, scoreWellbeing, selfReportScore, type Intent } from "@/lib/ai/nlu";
 import { asLang, partOfDay, pickPhrase, type Lang, type PhraseKey } from "@/lib/ai/phrases";
+import { askFamily, recentFamilyNews } from "@/lib/messages";
 
 // The AI companion. Order of precedence for every message:
 //   1. Safety: distress / help -> critical alert + fixed reassuring reply (never left to the LLM)
@@ -16,6 +17,8 @@ import { asLang, partOfDay, pickPhrase, type Lang, type PhraseKey } from "@/lib/
 //   3. Monitoring: pull meal/sleep/activity self-reports and wellbeing out of what was said
 //   4. Conversation: LLM reply grounded in the senior's profile, shaped to be short and varied,
 //      or the offline phrase bank when no LLM is configured / it fails.
+//   5. Unknown personal facts: the LLM answers "ASK_FAMILY: <question>" and Saathi asks the
+//      family instead of guessing, then tells the senior who it asked.
 
 export type CompanionSource = "app" | "hub" | "dashboard";
 
@@ -26,6 +29,7 @@ export type CompanionResult = {
   wellbeing: ReturnType<typeof scoreWellbeing>;
   answeredCheckInId?: string;
   alertRaised?: string;
+  askedFamily?: { caregiverName: string; question: string; messageId: string };
   selfReports: { kind: string; answer: string }[];
   usedLlm: boolean;
 };
@@ -90,7 +94,18 @@ export type CompanionContext = {
   todayReminders: { label: string; time: string; status: string }[];
   indoor?: { temperature?: number; humidity?: number };
   recentReports: string[];
+  familyNews?: string[];
+  familyNotes?: string[];
 };
+
+// The model's way of saying "only the family knows this".
+const ASK_FAMILY = /ASK[_ ]?FAMILY\s*:\s*(.+)/i;
+
+export function parseAskFamily(text: string): string | null {
+  const m = ASK_FAMILY.exec(text.replace(/[*`]+/g, ""));
+  const q = m?.[1].split("\n")[0].trim().replace(/^["“]|["”]$/g, "");
+  return q ? q : null;
+}
 
 export function buildSystemPrompt(ctx: CompanionContext): string {
   const reminders = ctx.todayReminders.length
@@ -101,16 +116,18 @@ export function buildSystemPrompt(ctx: CompanionContext): string {
     : "No indoor sensor data right now.";
 
   return [
-    `You are Saathi, a warm companion chatting with ${ctx.name}, an older adult living at home. Your replies are also read aloud, so write the way a kind person speaks.`,
+    `You are Saathi, a gentle, soft-spoken woman who keeps ${ctx.name}, an older adult living at home, company, like a loving daughter or a caring neighbour. Your replies are read aloud in a woman's voice, so speak softly and tenderly, the way a kind woman talks to someone she loves.`,
     `Reply ${ctx.lang === "hi" ? "in simple Hindi (Devanagari script)" : "in simple English"} by default. If ${ctx.name} writes in Hinglish (Hindi in English letters), reply in simple Hinglish; if they write in Devanagari, reply in Devanagari.`,
     "",
     "Rules:",
     `- At most 2 short sentences (under ${MAX_WORDS} words). Plain words, no lists, no emojis, no markdown.`,
-    "- Be warm and respectful. Use their name sometimes, not every time.",
+    "- Be warm, soft and respectful; never bossy or clinical. Use their name sometimes, not every time.",
+    "- In Hindi replies, always use feminine forms for yourself (मैं सुन रही हूँ, मैं बताऊँगी, मैं समझ सकती हूँ) and address them respectfully with आप and जी. In Hinglish too: \"main sun rahi hoon\". English replies use English letters only.",
     "- Never repeat a phrase you used in the recent conversation; vary greetings and compliments.",
     "- Always end on a positive or encouraging note, or a gentle question that keeps them talking.",
     "- Do not give medical diagnoses or change medication advice. For health worries, suggest telling family or their doctor.",
-    "- Do not invent facts (outdoor weather, news, appointments). If you don't know, say so kindly and steer back to them.",
+    "- Do not invent facts. For outdoor weather or news, say kindly that you don't know and steer back to them.",
+    `- If ${ctx.name} asks something personal that only the family would know (when someone is visiting or calling, plans, appointments, where something is kept, family news): first look at the notes and recent family messages below. If a message answers it (even in Hinglish, e.g. "mai shaam aungi" means "I'll come in the evening"), answer from it and say who told you. Only if nothing below answers it, do not guess: reply with exactly one line: ASK_FAMILY: <their question, rewritten in English for the family, e.g. "When is Rohan visiting?">`,
     "- If they mention eating, sleep, a walk or talking to someone, respond warmly to it.",
     "- Always respond to their latest message; earlier messages are only background.",
     "- Mention the indoor temperature only if they talk about heat, cold or the weather.",
@@ -120,6 +137,17 @@ export function buildSystemPrompt(ctx: CompanionContext): string {
     "Today's reminders:",
     reminders,
     ctx.recentReports.length ? `Recent check-ins from ${ctx.name}: ${ctx.recentReports.join("; ")}.` : "",
+    ctx.familyNews?.length
+      ? `Recent family messages (use them to answer, and always say who told you, e.g. "Anupama said she'll come in the evening"):\n${ctx.familyNews.map((n) => `- ${n}`).join("\n")}`
+      : "",
+    ctx.familyNotes?.length
+      ? [
+          `Family notes (private notes between family members, not written for ${ctx.name}):`,
+          ...ctx.familyNotes.map((n) => `- ${n}`),
+          `Use them only for practical facts: plans, visits, calls, appointment times, where things are. Say who told you.`,
+          `Never tell ${ctx.name} anything from these notes about their health, readings, test results or the family's worries, even if they ask; instead say gently that their family or doctor will talk to them about it.`,
+        ].join("\n")
+      : "",
   ]
     .filter((l) => l !== "")
     .join("\n");
@@ -129,7 +157,7 @@ async function loadContext(elder: Elder, now: Date): Promise<CompanionContext> {
   const lang = asLang(elder.language);
   const p = zonedParts(now, elder.timezone);
   const dayStart = startOfZonedDay(now, elder.timezone);
-  const [checkIns, temp, hum, reports, moods] = await Promise.all([
+  const [checkIns, temp, hum, reports, moods, familyNews, notes] = await Promise.all([
     prisma.checkIn.findMany({
       where: { elderId: elder.id, scheduledFor: { gte: dayStart } },
       include: { reminder: true },
@@ -149,6 +177,13 @@ async function loadContext(elder: Elder, now: Date): Promise<CompanionContext> {
       take: 5,
     }),
     prisma.moodLog.findFirst({ where: { elderId: elder.id, createdAt: { gte: dayStart } }, orderBy: { createdAt: "desc" } }),
+    recentFamilyNews(elder.id, now),
+    prisma.caregiverNote.findMany({
+      where: { elderId: elder.id, createdAt: { gte: new Date(now.getTime() - 14 * 24 * 3600_000) } },
+      include: { caregiver: { select: { name: true } } },
+      orderBy: { createdAt: "desc" },
+      take: 8,
+    }),
   ]);
   return {
     name: elder.name.split(" ")[0],
@@ -162,6 +197,8 @@ async function loadContext(elder: Elder, now: Date): Promise<CompanionContext> {
       ...(moods ? [`mood today: ${moods.mood.replace("_", " ")}`] : []),
       ...reports.map((r) => `${r.kind.toLowerCase()}: ${r.answer}`),
     ],
+    familyNews,
+    familyNotes: notes.reverse().map((n) => `${n.caregiver.name.split(" ")[0]} (${zonedDayKey(n.createdAt, elder.timezone)}): ${n.body.slice(0, 300)}`),
   };
 }
 
@@ -329,6 +366,20 @@ export async function companionTurn(opts: {
   // Generous token budget: reasoning models spend part of it thinking; shapeReply() keeps the answer short.
   const llm = unwell ? null : await complete(messages, { maxTokens: 400, temperature: 0.85 });
   const vars = { name, part: ctx.partOfDay };
+
+  const familyQuestion = llm ? parseAskFamily(llm) : null;
+  if (familyQuestion) {
+    // Ask the family instead of guessing, and tell them who was asked.
+    const asked = persist ? await askFamily({ elder, question: familyQuestion, heard: text, now }) : null;
+    const replyLang: Lang = detectScript(text) === "devanagari" ? "hi" : lang;
+    if (asked) {
+      result.askedFamily = { caregiverName: asked.caregiver.name, question: familyQuestion, messageId: asked.message.id };
+      result.reply = pickPhrase(asked.repeated ? "alreadyAsked" : "askedFamily", replyLang, { name, family: asked.caregiver.name.split(" ")[0] }, recentReplies);
+    } else {
+      result.reply = pickPhrase("question", replyLang, { name }, recentReplies);
+    }
+    return finish(result);
+  }
 
   if (llm) {
     let shaped = shapeReply(llm);

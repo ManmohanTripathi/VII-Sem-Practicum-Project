@@ -10,6 +10,7 @@ import { zonedDayKey } from "@/lib/time";
 
 // Family messages: caregivers send voice notes or text to the elder (played aloud on their phone);
 // the elder replies by voice (transcribed for the family, and checked for help/health words).
+// "question" messages are things the elder asked Saathi that only the family can answer.
 
 export const MAX_AUDIO_BYTES = 10 * 1024 * 1024;
 
@@ -17,14 +18,15 @@ export type MessageDTO = {
   id: string;
   direction: "TO_ELDER" | "FROM_ELDER";
   senderName: string;
-  kind: "voice" | "text";
+  kind: "voice" | "text" | "question";
   text: string | null;
   audioUrl: string | null;
   playedAt: string | null;
   createdAt: string;
+  askedName?: string | null; // for questions: the caregiver Saathi asked
 };
 
-export function toDTO(m: FamilyMessage): MessageDTO {
+export function toDTO(m: FamilyMessage & { caregiver?: { name: string } | null }): MessageDTO {
   return {
     id: m.id,
     direction: m.direction as MessageDTO["direction"],
@@ -34,6 +36,7 @@ export function toDTO(m: FamilyMessage): MessageDTO {
     audioUrl: m.audioFile ? `/api/messages/${m.id}/audio` : null,
     playedAt: m.playedAt?.toISOString() ?? null,
     createdAt: m.createdAt.toISOString(),
+    ...(m.kind === "question" ? { askedName: m.caregiver?.name ?? null } : {}),
   };
 }
 
@@ -165,4 +168,56 @@ export async function markPlayed(message: FamilyMessage, elderName: string) {
   const updated = await prisma.familyMessage.update({ where: { id: message.id }, data: { playedAt: new Date() } });
   emitCareEvent({ elderId: message.elderId, type: "message.played", payload: { ...toDTO(updated), elderName } });
   return updated;
+}
+
+// Saathi didn't know something personal ("When is Rohan coming?"), so it asks the family.
+// Posts the question into the family thread and pushes it to every caregiver; their answer is an
+// ordinary message that plays on the elder's phone (and Saathi reads it as background later).
+// Returns the caregiver Saathi tells the elder it asked, or null when nobody can be asked.
+export async function askFamily(opts: { elder: Elder; question: string; heard: string; now?: Date }) {
+  const { elder } = opts;
+  const now = opts.now ?? new Date();
+  const links = await prisma.caregiverLink.findMany({ where: { elderId: elder.id }, include: { caregiver: true }, orderBy: { id: "asc" } });
+  if (!links.length) return null;
+  const asked = links[0].caregiver;
+  const question = opts.question.trim().slice(0, 300);
+
+  // Don't send the same question twice in a couple of hours.
+  const recent = await prisma.familyMessage.findMany({
+    where: { elderId: elder.id, kind: "question", createdAt: { gte: new Date(now.getTime() - 2 * 3600_000) } },
+  });
+  const norm = (t: string) => t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  const duplicate = recent.find((m) => m.text && norm(m.text) === norm(question));
+  if (duplicate) return { caregiver: asked, message: duplicate, repeated: true };
+
+  const message = await prisma.familyMessage.create({
+    data: { elderId: elder.id, direction: "FROM_ELDER", caregiverId: asked.id, senderName: elder.name, kind: "question", text: question },
+  });
+  emitCareEvent({ elderId: elder.id, type: "message.created", payload: { ...toDTO({ ...message, caregiver: asked }), elderName: elder.name, heard: opts.heard } });
+
+  const name = first(elder.name);
+  await sendPush(
+    links
+      .filter((l) => l.caregiver.pushToken)
+      .map((l) => ({
+        to: l.caregiver.pushToken!,
+        title: `${name} asked Saathi something`,
+        body: `“${question.slice(0, 120)}” Reply so Saathi can tell ${name}.`,
+        data: { messageId: message.id, elderId: elder.id },
+        channelId: "alerts",
+      }))
+  );
+  return { caregiver: asked, message, repeated: false };
+}
+
+// What the family told the elder recently, so Saathi can answer from it next time.
+export async function recentFamilyNews(elderId: string, now = new Date()) {
+  const rows = await prisma.familyMessage.findMany({
+    where: { elderId, createdAt: { gte: new Date(now.getTime() - 3 * 24 * 3600_000) }, text: { not: null } },
+    orderBy: { createdAt: "desc" },
+    take: 8,
+  });
+  return rows.reverse().map((m) =>
+    m.kind === "question" ? `They asked the family: "${m.text}"` : m.direction === "TO_ELDER" ? `${first(m.senderName)} said: "${m.text}"` : `They told the family: "${m.text}"`
+  );
 }

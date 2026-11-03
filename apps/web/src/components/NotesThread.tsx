@@ -7,7 +7,8 @@ import { useToast } from "@/components/ui/toast";
 
 type Note = { id: string; body: string; createdAt: string; caregiver: { name: string } };
 
-// Shared notes between siblings / caregivers looking after the same parent.
+// Shared notes between siblings / caregivers looking after the same parent. Saathi also reads the
+// last two weeks of notes to answer the parent's practical questions (plans, visits, appointments).
 export function NotesThread({ elderId, notes }: { elderId: string; notes: Note[] }) {
   const router = useRouter();
   const toast = useToast();
@@ -32,7 +33,7 @@ export function NotesThread({ elderId, notes }: { elderId: string; notes: Note[]
   }
 
   return (
-    <Card title="Family notes" icon={ICONS.note}>
+    <Card title="Family notes" icon={ICONS.note} description="Shared with the family. Saathi also uses them to answer practical questions, like visits and appointments.">
       <form onSubmit={post}>
         <textarea
           value={body}

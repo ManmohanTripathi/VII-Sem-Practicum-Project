@@ -71,6 +71,18 @@ export function FamilyScreen({ lang, largeText, onBack }: { lang: Lang; largeTex
           {messages.length === 0 && <Text style={[styles.empty, { fontSize: fs.md }]}>{t(lang, "noMessages")}</Text>}
           {messages.map((m) => {
             const fromFamily = m.direction === "TO_ELDER";
+            if (m.kind === "question") {
+              return (
+                <Card key={m.id} style={[styles.msg, styles.mine, { backgroundColor: "#FFFBEB", borderColor: "#FDE68A", borderWidth: 2 }]}>
+                  <View style={styles.row}>
+                    <Icon name="help-circle" size={20} color="#B45309" />
+                    <Text style={[styles.sender, { fontSize: fs.sm }]}>{t(lang, "askedName").replace("{name}", (m.askedName ?? t(lang, "familyTile")).split(" ")[0])}</Text>
+                    <Text style={[styles.when, { fontSize: fs.xs }]}>{when(m.createdAt, lang)}</Text>
+                  </View>
+                  <Text style={[styles.text, { fontSize: fs.lg }]}>{m.text}</Text>
+                </Card>
+              );
+            }
             return (
               <Pressable key={m.id} onPress={() => play(m)} accessibilityRole="button" accessibilityLabel={t(lang, "playAgain")}>
                 <Card style={[styles.msg, fromFamily ? styles.theirs : styles.mine]}>

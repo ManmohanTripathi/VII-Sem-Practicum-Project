@@ -8,10 +8,11 @@ import { Button } from "@/components/ui/button";
 import { Field, inputClass } from "@/components/ui/field";
 import { useToast } from "@/components/ui/toast";
 
-export function AccountSettings({ name: initialName, email }: { name: string; email: string }) {
+export function AccountSettings({ name: initialName, email, phone: initialPhone }: { name: string; email: string; phone: string | null }) {
   const router = useRouter();
   const toast = useToast();
   const [name, setName] = useState(initialName);
+  const [phone, setPhone] = useState(initialPhone ?? "");
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [busy, setBusy] = useState<"name" | "password" | null>(null);
@@ -21,7 +22,7 @@ export function AccountSettings({ name: initialName, email }: { name: string; em
     const res = await fetch("/api/auth/me", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     setBusy(null);
     if (!res.ok) return toast((await res.json().catch(() => ({}))).error ?? "Couldn't save", "bad");
-    toast(kind === "name" ? "Name saved" : "Password changed");
+    toast(kind === "name" ? "Profile saved" : "Password changed");
     if (kind === "password") {
       setCurrent("");
       setNext("");
@@ -41,7 +42,7 @@ export function AccountSettings({ name: initialName, email }: { name: string; em
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            save({ name }, "name");
+            save({ name, phone }, "name");
           }}
           className="space-y-4"
         >
@@ -51,7 +52,10 @@ export function AccountSettings({ name: initialName, email }: { name: string; em
           <Field label="Email" htmlFor="email" hint="Siblings use this email to share a parent with you.">
             <input id="email" value={email} disabled className={`${inputClass} bg-surface-2 text-muted`} />
           </Field>
-          <Button type="submit" loading={busy === "name"} disabled={name.trim() === initialName}>
+          <Field label="Phone number" htmlFor="phone" hint="Your parent's Help button calls this number.">
+            <input id="phone" type="tel" autoComplete="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+91 98765 43210" className={inputClass} />
+          </Field>
+          <Button type="submit" loading={busy === "name"} disabled={name.trim() === initialName && phone.trim() === (initialPhone ?? "")}>
             Save
           </Button>
         </form>

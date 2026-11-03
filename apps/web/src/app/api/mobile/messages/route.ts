@@ -10,8 +10,8 @@ export const dynamic = "force-dynamic";
 // the phone should announce and play by itself.
 export const GET = route(async (request) => {
   const { elder } = await requireActingElder(request, request.nextUrl.searchParams.get("elderId"));
-  const messages = await prisma.familyMessage.findMany({ where: { elderId: elder.id }, orderBy: { createdAt: "desc" }, take: 30 });
-  const list = messages.reverse().map(toDTO);
+  const messages = await prisma.familyMessage.findMany({ where: { elderId: elder.id }, orderBy: { createdAt: "desc" }, take: 30, include: { caregiver: { select: { name: true } } } });
+  const list = messages.reverse().map((m) => toDTO(m));
   return NextResponse.json({
     messages: list,
     unplayed: list.filter((m) => m.direction === "TO_ELDER" && !m.playedAt),

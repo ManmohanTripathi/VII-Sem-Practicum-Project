@@ -29,5 +29,6 @@ export const POST = route(async (request) => {
     intent: result.intent,
     answeredCheckInId: result.answeredCheckInId ?? null,
     alertRaised: !!result.alertRaised,
+    askedFamily: result.askedFamily ?? null,
   });
 });

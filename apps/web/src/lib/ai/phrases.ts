@@ -57,6 +57,14 @@ export const PHRASES = {
     en: ["That's a good question, {name} — maybe ask your family when they call. Meanwhile, how is your day going?", "I'm not completely sure about that one, so let's ask your family later. Tell me, what are you up to today?"],
     hi: ["अच्छा सवाल है, {name} — जब परिवार फ़ोन करे, उनसे पूछिए। तब तक बताइए, आज क्या कर रहे हैं?"],
   },
+  askedFamily: {
+    en: ["I'm not sure about that, {name}, so I've asked {family} for you. I'll tell you as soon as they reply.", "Let me find out for you, {name}. I've sent {family} a message, and I'll let you know their answer."],
+    hi: ["मुझे यह पक्का नहीं पता, {name} जी, इसलिए मैंने {family} से पूछ लिया है। जवाब आते ही मैं आपको बता दूँगी।", "मैं पता करती हूँ, {name} जी। मैंने {family} को संदेश भेज दिया है, उनका जवाब आते ही सुनाऊँगी।"],
+  },
+  alreadyAsked: {
+    en: ["I've already asked {family}, {name}. I'll tell you the moment they reply.", "{family} has your question, {name}. As soon as they answer, I'll let you know."],
+    hi: ["मैंने {family} से पहले ही पूछ लिया है, {name} जी। जवाब आते ही बता दूँगी।", "{family} तक आपका सवाल पहुँच गया है, {name} जी। जवाब आते ही सुनाऊँगी।"],
+  },
   chat: {
     en: ["Tell me more, {name} — I'm listening.", "That's interesting! What else is on your mind today?", "I enjoy our chats. What would make today a good day for you?", "Thanks for sharing that with me. Have you had some water recently?"],
     hi: ["और बताइए, {name} — मैं सुन रही हूँ।", "दिलचस्प! आज और क्या चल रहा है?", "आपसे बात करना अच्छा लगता है। आज का दिन अच्छा बनाने के लिए क्या करें?"],

@@ -48,5 +48,6 @@ export const POST = route(async (request) => {
     audioUrl,
     conversationId: result?.conversationId ?? null,
     alertRaised: !!result?.alertRaised,
+    askedFamily: result?.askedFamily ?? null,
   });
 });

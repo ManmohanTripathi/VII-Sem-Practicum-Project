@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { Check, CheckCheck, Mic, Send, Square, Trash2, Volume2 } from "lucide-react";
+import { Check, CheckCheck, HelpCircle, Mic, Send, Square, Trash2, Volume2 } from "lucide-react";
 import { Card } from "@/components/Card";
 import { Button } from "@/components/ui/button";
 import { inputClass } from "@/components/ui/field";
@@ -14,7 +14,7 @@ type Message = {
   id: string;
   direction: "TO_ELDER" | "FROM_ELDER";
   senderName: string;
-  kind: "voice" | "text";
+  kind: "voice" | "text" | "question";
   text: string | null;
   audioUrl: string | null;
   playedAt: string | null;
@@ -27,7 +27,8 @@ const QUICK = {
 };
 
 // Family messages with the parent: voice notes and typed messages are played aloud on their phone;
-// their spoken replies come back here with a transcript.
+// their spoken replies come back here with a transcript. Questions Saathi couldn't answer show up
+// highlighted; the answer is sent like any other message and Saathi remembers it.
 export function MessagesPanel({ elderId, elderName, language, messages }: { elderId: string; elderName: string; language: string; messages: Message[] }) {
   const router = useRouter();
   const toast = useToast();
@@ -36,6 +37,7 @@ export function MessagesPanel({ elderId, elderName, language, messages }: { elde
   const [draft, setDraft] = useState<{ blob: Blob; url: string } | null>(null);
   const [sending, setSending] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
+  const input = useRef<HTMLInputElement>(null);
   const first = elderName.split(" ")[0];
 
   useEffect(() => {
@@ -91,6 +93,21 @@ export function MessagesPanel({ elderId, elderName, language, messages }: { elde
         {messages.length === 0 && <p className="py-8 text-center text-sm text-muted">No messages yet. Send {first} a voice note — it will play automatically.</p>}
         {messages.map((m) => {
           const mine = m.direction === "TO_ELDER";
+          if (m.kind === "question") {
+            return (
+              <div key={m.id} className="flex justify-start">
+                <div className="max-w-[85%] rounded-2xl rounded-bl-md border border-amber-300 bg-amber-50 px-3.5 py-2.5 text-amber-950">
+                  <div className="mb-1 flex items-center gap-1.5 text-xs font-medium opacity-80" suppressHydrationWarning>
+                    <HelpCircle className="h-3.5 w-3.5" /> {first} asked Saathi · {timeAgo(m.createdAt)}
+                  </div>
+                  <p className="text-[15px] leading-snug">{m.text}</p>
+                  <button onClick={() => input.current?.focus()} className="mt-1.5 text-xs font-semibold underline underline-offset-2">
+                    Reply — Saathi will tell {first}
+                  </button>
+                </div>
+              </div>
+            );
+          }
           return (
             <div key={m.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
               <div className={`max-w-[85%] rounded-2xl px-3.5 py-2.5 ${mine ? "rounded-br-md bg-accent text-white" : "rounded-bl-md border border-line bg-surface"}`}>
@@ -168,6 +185,7 @@ export function MessagesPanel({ elderId, elderName, language, messages }: { elde
             </Button>
           )}
           <input
+            ref={input}
             value={text}
             onChange={(e) => setText(e.target.value)}
             maxLength={600}

@@ -84,8 +84,8 @@ export async function elevenSpeak(text: string): Promise<{ audio: ArrayBuffer; c
       body: JSON.stringify({
         text,
         model_id: process.env.ELEVENLABS_TTS_MODEL || "eleven_multilingual_v2",
-        // A touch slower and steadier than default: easier for older listeners.
-        voice_settings: { stability: 0.6, similarity_boost: 0.75, speed: 0.92 },
+        // Slower, steadier and softer than default: calm and easy for older listeners.
+        voice_settings: { stability: 0.7, similarity_boost: 0.75, style: 0, use_speaker_boost: false, speed: 0.88 },
       }),
       signal: AbortSignal.timeout(30_000),
     });

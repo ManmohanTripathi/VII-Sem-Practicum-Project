@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireCaregiverForElder, requireElderAccess } from "@/lib/auth";
-import { readJson, route } from "@/lib/http";
+import { HttpError, readJson, route } from "@/lib/http";
 import { isValidTimeZone } from "@/lib/time";
 
 export const dynamic = "force-dynamic";
@@ -15,7 +15,7 @@ export const GET = route<Ctx>(async (request, { params }) => {
   const elder = await prisma.elder.findUniqueOrThrow({
     where: { id },
     include: {
-      caregivers: { include: { caregiver: { select: { id: true, name: true, email: true } } } },
+      caregivers: { include: { caregiver: { select: { id: true, name: true, email: true, phone: true } } } },
       reminders: { orderBy: { time: "asc" } },
       moodLogs: { orderBy: { createdAt: "desc" }, take: 5 },
     },
@@ -34,6 +34,7 @@ export const GET = route<Ctx>(async (request, { params }) => {
 const patchSchema = z.object({
   name: z.string().trim().min(1).max(80).optional(),
   phone: z.string().trim().max(30).nullable().optional(),
+  helpCaregiverId: z.string().nullable().optional(),
   avatarColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
   timezone: z.string().refine(isValidTimeZone, "unknown timezone").optional(),
   // ESP32-CAM base URL; the dashboard loads {cameraUrl}/stream directly from the browser.
@@ -46,6 +47,10 @@ export const PATCH = route<Ctx>(async (request, { params }) => {
   const { id } = await params;
   await requireCaregiverForElder(request, id);
   const body = await readJson(request, patchSchema);
+  if (body.helpCaregiverId) {
+    const linked = await prisma.caregiverLink.findUnique({ where: { elderId_caregiverId: { elderId: id, caregiverId: body.helpCaregiverId } } });
+    if (!linked) throw new HttpError(400, "Choose someone who looks after this parent");
+  }
 
   const elder = await prisma.elder.update({
     where: { id },
@@ -57,6 +62,7 @@ export const PATCH = route<Ctx>(async (request, { params }) => {
       ...(body.cameraUrl !== undefined ? { cameraUrl: body.cameraUrl || null } : {}),
       ...(body.language !== undefined ? { language: body.language } : {}),
       ...(body.profile !== undefined ? { profile: body.profile || null } : {}),
+      ...(body.helpCaregiverId !== undefined ? { helpCaregiverId: body.helpCaregiverId } : {}),
     },
   });
 

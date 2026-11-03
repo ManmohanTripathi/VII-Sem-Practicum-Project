@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { helpContact } from "@/lib/help-contact";
 import { prisma } from "@/lib/prisma";
 import { requireActingElder } from "@/lib/auth";
 import { route } from "@/lib/http";
@@ -24,5 +25,7 @@ export const GET = route(async (request) => {
   ]);
   const { pairingCode: _code, ...publicElder } = elder;
   void _code;
-  return NextResponse.json({ elder: publicElder, items, prompts, moodToday: moodToday?.mood ?? null });
+  // Cached by the phone so the Help button can still call someone when the server is unreachable.
+  const help = await helpContact(elder);
+  return NextResponse.json({ elder: publicElder, items, prompts, moodToday: moodToday?.mood ?? null, helpContact: help });
 });

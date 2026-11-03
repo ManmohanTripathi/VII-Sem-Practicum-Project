@@ -3,12 +3,14 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { useToast } from "@/components/ui/toast";
+import { EmergencyOverlay, type Emergency } from "@/components/EmergencyOverlay";
 
 type Payload = Record<string, unknown> & {
   severity?: string;
   title?: string;
   message?: string;
   direction?: string;
+  kind?: string;
   text?: string | null;
   senderName?: string;
   newConcerns?: string[];
@@ -26,6 +28,7 @@ function headsUp(type: string, p: Payload, elderName: string): Heads | null {
       return { title: `${who}: ${p.title}`, detail: p.message, urgent: p.severity === "critical" };
     case "message.created":
       if (p.direction !== "FROM_ELDER") return null;
+      if (p.kind === "question") return { title: `${who} asked Saathi something`, detail: `“${p.text}” Reply so Saathi can tell them.`, urgent: false };
       return { title: `${who} sent you a voice message`, detail: p.text ? `“${p.text}”` : "Tap to listen", urgent: false };
     case "message.played":
       return { title: `${who} listened to your message`, detail: p.text ? `“${p.text}”` : undefined, urgent: false };
@@ -65,6 +68,7 @@ export function LiveUpdates({ elderId, elderNames = {}, showIndicator = false }:
   const router = useRouter();
   const toast = useToast();
   const [connected, setConnected] = useState(false);
+  const [emergency, setEmergency] = useState<Emergency | null>(null);
   const names = useRef(elderNames);
   useEffect(() => {
     names.current = elderNames;
@@ -81,7 +85,24 @@ export function LiveUpdates({ elderId, elderNames = {}, showIndicator = false }:
         const event = JSON.parse((msg as MessageEvent).data) as { elderId: string; type: string; payload?: Payload };
         const p = event.payload ?? {};
         const name = (p.elderName as string | undefined) ?? names.current[event.elderId] ?? "";
-        const h = headsUp(event.type, p, name);
+        // The home hardware's emergency alert takes over the screen with a siren.
+        if (event.type === "alert.created" && p.kind === "DEVICE_ALERT") {
+          setEmergency((prev) => ({
+            alertId: String(p.id),
+            elderId: event.elderId,
+            elderName: name,
+            message: String(p.message ?? ""),
+            count: prev && prev.elderId === event.elderId ? prev.count + 1 : 1,
+          }));
+          if ("Notification" in window && Notification.permission === "granted") {
+            new Notification(`EMERGENCY at ${name.split(" ")[0] || "home"}`, { body: String(p.message ?? ""), tag: `emergency:${p.id}`, requireInteraction: true });
+          }
+        }
+        // Handled on another device (the phone, a sibling): stop the siren here too.
+        if (event.type === "alert.updated" && p.kind === "DEVICE_ALERT" && p.acknowledgedAt) {
+          setEmergency((prev) => (prev && prev.elderId === event.elderId ? { ...prev, handledBy: String(p.acknowledgedBy ?? "Someone") } : prev));
+        }
+        const h = event.type === "alert.created" && p.kind === "DEVICE_ALERT" ? null : headsUp(event.type, p, name);
         if (h) {
           const href = event.type.startsWith("message") ? `/elders/${event.elderId}/messages` : `/elders/${event.elderId}`;
           toast(h.title, h.urgent ? "bad" : "info", { detail: h.detail, href, durationMs: h.urgent ? 15000 : 8000 });
@@ -110,11 +131,15 @@ export function LiveUpdates({ elderId, elderNames = {}, showIndicator = false }:
     };
   }, [elderId, router, toast]);
 
-  if (!showIndicator) return null;
+  const overlay = emergency && <EmergencyOverlay emergency={emergency} onClose={() => setEmergency(null)} />;
+  if (!showIndicator) return overlay;
   return (
-    <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${connected ? "bg-good-soft text-good" : "bg-surface-2 text-muted"}`}>
-      <span className={`h-1.5 w-1.5 rounded-full ${connected ? "bg-good" : "bg-stone-400"}`} />
-      {connected ? "Live" : "Reconnecting…"}
-    </span>
+    <>
+      {overlay}
+      <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${connected ? "bg-good-soft text-good" : "bg-surface-2 text-muted"}`}>
+        <span className={`h-1.5 w-1.5 rounded-full ${connected ? "bg-good" : "bg-stone-400"}`} />
+        {connected ? "Live" : "Reconnecting…"}
+      </span>
+    </>
   );
 }

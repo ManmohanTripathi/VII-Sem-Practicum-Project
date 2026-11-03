@@ -11,7 +11,8 @@ export type AlertKind =
   | "HEALTH_CONCERN"
   | "HELP_REQUEST"
   | "DISTRESS"
-  | "HUB_OFFLINE";
+  | "HUB_OFFLINE"
+  | "DEVICE_ALERT";
 
 export type NewAlert = {
   elderId: string;

@@ -129,9 +129,29 @@ export async function pairWithCode(code: string): Promise<Elder> {
   return data.elder;
 }
 
-export async function fetchToday(): Promise<{ elder: Elder; items: TodayItem[]; prompts: Prompt[]; moodToday: Mood | null }> {
+// Who the Help button calls. Kept on the phone so it still works when the server can't be reached.
+export type HelpContact = { name: string; phone: string };
+const HELP_CONTACT_KEY = "carecircle:helpContact";
+
+async function rememberHelpContact(c: HelpContact | null | undefined) {
+  if (c === undefined) return;
+  if (c) await AsyncStorage.setItem(HELP_CONTACT_KEY, JSON.stringify({ name: c.name, phone: c.phone })).catch(() => {});
+  else await AsyncStorage.removeItem(HELP_CONTACT_KEY).catch(() => {});
+}
+
+export async function getHelpContact(): Promise<HelpContact | null> {
+  try {
+    const raw = await AsyncStorage.getItem(HELP_CONTACT_KEY);
+    return raw ? (JSON.parse(raw) as HelpContact) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchToday(): Promise<{ elder: Elder; items: TodayItem[]; prompts: Prompt[]; moodToday: Mood | null; helpContact?: HelpContact | null }> {
   const api = await client();
   const { data } = await api.get("/api/mobile/today");
+  await rememberHelpContact(data.helpContact);
   return data;
 }
 
@@ -167,8 +187,9 @@ export async function sendChat(text: string) {
 
 export async function requestHelp() {
   const api = await client();
-  const { data } = await api.post("/api/mobile/help", {});
-  return data as { message: string };
+  const { data } = await api.post("/api/mobile/help", {}, { timeout: 8000 });
+  await rememberHelpContact(data.call);
+  return data as { message: string; call: HelpContact | null };
 }
 
 export async function registerSeniorPushToken(pushToken: string | null) {
@@ -230,6 +251,7 @@ export type VoiceReply = {
   reply: string;
   audioUrl: string | null; // absolute URL of the spoken reply, or null (fall back to on-device speech)
   alertRaised: boolean;
+  askedFamily?: { caregiverName: string; question: string; messageId: string } | null;
 };
 
 // Uploads a recording; the server transcribes it (ElevenLabs), asks the companion, and speaks the reply.
@@ -304,11 +326,12 @@ export type FamilyMessage = {
   id: string;
   direction: "TO_ELDER" | "FROM_ELDER";
   senderName: string;
-  kind: "voice" | "text";
+  kind: "voice" | "text" | "question"; // question: something Saathi asked the family for the elder
   text: string | null;
   audioUrl: string | null; // absolute once resolved; needs authHeaders() to play
   playedAt: string | null;
   createdAt: string;
+  askedName?: string | null;
 };
 
 export async function authHeaders(): Promise<Record<string, string>> {
@@ -373,10 +396,189 @@ export type FeedItem = {
   body: string;
   severity: "info" | "warning" | "critical";
   at: string;
+  alertId?: string;
+  emergency?: boolean; // the home hardware's MQTT emergency alert
 };
 
 export async function fetchFeed(since: string): Promise<{ items: FeedItem[]; serverTime: string }> {
   const api = await client();
   const { data } = await api.get("/api/caregiver/feed", { params: { since } });
   return data;
+}
+
+// --- Live events (Server-Sent Events from /api/events) ---
+
+export type CareEvent = { elderId: string; type: string; payload?: Record<string, unknown> };
+
+// Keeps a live connection to the server and calls onEvent the moment something happens.
+// React Native's fetch can't stream, so this reads the SSE stream through XMLHttpRequest progress
+// events. Reconnects after errors, and every few minutes so the response text doesn't grow forever.
+export function openCareEvents(onEvent: (e: CareEvent) => void, onStatus?: (live: boolean) => void): () => void {
+  let xhr: XMLHttpRequest | null = null;
+  let retry: ReturnType<typeof setTimeout> | undefined;
+  let recycle: ReturnType<typeof setTimeout> | undefined;
+  let closed = false;
+
+  const connect = async () => {
+    if (closed) return;
+    const [baseURL, session] = await Promise.all([getServerUrl(), getSession()]);
+    if (!session || session.role !== "caregiver" || closed) return;
+    let seen = 0;
+    let buffer = "";
+    const x = new XMLHttpRequest();
+    xhr = x;
+    x.open("GET", `${baseURL}/api/events`);
+    x.setRequestHeader("Authorization", `Bearer ${session.token}`);
+    x.setRequestHeader("Accept", "text/event-stream");
+    x.onreadystatechange = () => {
+      if (x.readyState === 2) onStatus?.(x.status === 200);
+    };
+    x.onprogress = () => {
+      buffer += x.responseText.slice(seen);
+      seen = x.responseText.length;
+      const blocks = buffer.split("\n\n");
+      buffer = blocks.pop() ?? "";
+      for (const block of blocks) {
+        const data = block
+          .split("\n")
+          .filter((l) => l.startsWith("data:"))
+          .map((l) => l.slice(5).trim())
+          .join("\n");
+        if (!data) continue;
+        try {
+          onEvent(JSON.parse(data) as CareEvent);
+        } catch {}
+      }
+    };
+    const again = (delay: number) => {
+      if (xhr !== x || closed) return;
+      onStatus?.(false);
+      clearTimeout(recycle);
+      retry = setTimeout(connect, delay);
+    };
+    x.onerror = () => again(3000);
+    x.onload = () => again(1000);
+    x.send();
+    clearTimeout(recycle);
+    recycle = setTimeout(() => {
+      if (xhr === x) {
+        xhr = null;
+        x.abort();
+        connect();
+      }
+    }, 5 * 60_000);
+  };
+
+  connect();
+  return () => {
+    closed = true;
+    clearTimeout(retry);
+    clearTimeout(recycle);
+    xhr?.abort();
+    xhr = null;
+  };
+}
+
+// --- Caretaker: everything the website shows for one parent ---
+
+export type ReminderRow = { id: string; elderId: string; type: string; label: string; time: string; question: string; daysOfWeek: string; active: boolean };
+export type CheckInRow = { id: string; scheduledFor: string; status: string; respondedAt: string | null; reminder: { label: string; time: string } };
+export type AlertRow = Alert;
+export type NoteRow = { id: string; body: string; createdAt: string; caregiver: { name: string } };
+export type SelfReportRow = { id: string; kind: string; answer: string; text: string | null; createdAt: string };
+export type MoodRow = { id: string; mood: string; createdAt: string };
+export type ParentDetails = {
+  id: string;
+  name: string;
+  phone: string | null;
+  language: string;
+  timezone: string;
+  profile: string | null;
+  cameraUrl: string | null;
+  helpCaregiverId: string | null;
+  caregivers: { relation: string; caregiver: { id: string; name: string; email: string; phone: string | null } }[];
+  moodLogs: MoodRow[];
+};
+export type Environment = {
+  readings: Record<string, { value: number; at: string }>;
+  hubs: { id: string; name: string; online: boolean; lastSeenAt: string | null }[];
+  activeSince: string | null;
+  lastMotionAt: string | null;
+  motionByHour: number[];
+};
+export type Insights = {
+  days: { day: string; score: number; flagged: boolean }[];
+  today: { day: string; deviations: { key: string; label: string; explanation: string }[]; score: number; baselineDays: number };
+  todayIsPartial: boolean;
+  lateStart: { late: boolean; usual?: number };
+};
+export type Pairing = { pairingCode: string; devices: { id: string; kind: string; name: string; online: boolean; lastSeenAt: string | null; pushEnabled: boolean }[] };
+
+export async function fetchParent(elderId: string): Promise<ParentDetails> {
+  const api = await client();
+  return (await api.get(`/api/elders/${elderId}`)).data.elder;
+}
+export async function updateParent(elderId: string, patch: Partial<Pick<ParentDetails, "name" | "phone" | "language" | "timezone" | "profile" | "cameraUrl" | "helpCaregiverId">>) {
+  const api = await client();
+  return (await api.patch(`/api/elders/${elderId}`, patch)).data.elder as ParentDetails;
+}
+export async function deleteParent(elderId: string) {
+  const api = await client();
+  await api.delete(`/api/elders/${elderId}`);
+}
+export async function fetchParentAlerts(elderId: string): Promise<AlertRow[]> {
+  const api = await client();
+  return (await api.get(`/api/elders/${elderId}/alerts`)).data.alerts;
+}
+export async function fetchReminders(elderId: string): Promise<ReminderRow[]> {
+  const api = await client();
+  return (await api.get(`/api/reminders`, { params: { elderId } })).data.reminders;
+}
+export async function createReminder(r: Omit<ReminderRow, "id" | "active">) {
+  const api = await client();
+  return (await api.post(`/api/reminders`, r)).data.reminder as ReminderRow;
+}
+export async function updateReminder(id: string, patch: Partial<Omit<ReminderRow, "id" | "elderId">>) {
+  const api = await client();
+  return (await api.patch(`/api/reminders/${id}`, patch)).data.reminder as ReminderRow;
+}
+export async function deleteReminder(id: string) {
+  const api = await client();
+  await api.delete(`/api/reminders/${id}`);
+}
+export async function fetchCheckIns(elderId: string, days = 7): Promise<CheckInRow[]> {
+  const api = await client();
+  return (await api.get(`/api/checkins`, { params: { elderId, days } })).data.checkIns;
+}
+export async function fetchEnvironment(elderId: string): Promise<Environment> {
+  const api = await client();
+  return (await api.get(`/api/elders/${elderId}/environment`)).data;
+}
+export async function fetchInsights(elderId: string): Promise<Insights> {
+  const api = await client();
+  return (await api.get(`/api/elders/${elderId}/insights`)).data;
+}
+export async function fetchSelfReports(elderId: string): Promise<SelfReportRow[]> {
+  const api = await client();
+  return (await api.get(`/api/elders/${elderId}/self-reports`)).data.reports;
+}
+export async function fetchNotes(elderId: string): Promise<NoteRow[]> {
+  const api = await client();
+  return (await api.get(`/api/elders/${elderId}/notes`)).data.notes;
+}
+export async function addNote(elderId: string, body: string) {
+  const api = await client();
+  await api.post(`/api/elders/${elderId}/notes`, { body });
+}
+export async function inviteCaregiver(elderId: string, email: string, relation: string) {
+  const api = await client();
+  await api.post(`/api/elders/${elderId}/caregivers`, { email, relation });
+}
+export async function fetchPairing(elderId: string): Promise<Pairing> {
+  const api = await client();
+  return (await api.get(`/api/elders/${elderId}/pairing`)).data;
+}
+export async function newPairingCode(elderId: string): Promise<string> {
+  const api = await client();
+  return (await api.post(`/api/elders/${elderId}/pairing`)).data.pairingCode;
 }

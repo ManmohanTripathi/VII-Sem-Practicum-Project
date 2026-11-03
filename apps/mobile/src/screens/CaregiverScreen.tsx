@@ -1,58 +1,30 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Alert, Animated, AppState, Linking, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Animated, AppState, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import * as Haptics from "expo-haptics";
 import {
   acknowledgeAlert,
-  ConversationSummary,
   ElderOverview,
   errorMessage,
   FeedItem,
   fetchFeed,
-  fetchConversations,
   fetchOverview,
   isUnauthorized,
+  openCareEvents,
   registerCaregiverPushToken,
 } from "../api";
+import { EmergencyAlarm, type Emergency } from "../components/EmergencyAlarm";
 import { getPushToken } from "../notifications";
 import { Lang, t } from "../i18n";
 import { Card } from "../ui/Card";
 import { Icon, type IconName } from "../ui/Icon";
-import { Pill, type Tone } from "../ui/Pill";
 import { ScreenHeader } from "../ui/ScreenHeader";
 import { colors, radius } from "../ui/theme";
-import { MessagesSection } from "./caretaker/MessagesSection";
+import { ParentDetail } from "./caretaker/ParentDetail";
+import { ago, DOT } from "./caretaker/shared";
 
 type Tab = "family" | "alerts" | "settings";
 
-const DOT: Record<string, { color: string; icon: IconName | null }> = {
-  DONE_ON_TIME: { color: colors.good, icon: "checkmark" },
-  DONE_LATE: { color: "#D97706", icon: "checkmark" },
-  MISSED: { color: colors.bad, icon: "close" },
-  SKIPPED: { color: colors.muted, icon: "remove" },
-  PENDING: { color: colors.line, icon: null },
-};
-
-const MOOD: Record<string, { label: string; tone: Tone }> = {
-  good: { label: "Seemed good", tone: "good" },
-  okay: { label: "Seemed okay", tone: "neutral" },
-  low: { label: "Seemed low", tone: "warn" },
-  unwell: { label: "Unwell", tone: "bad" },
-};
-
 const STATUS_ICON: Record<string, IconName> = { good: "checkmark-circle", warn: "warning", bad: "alert-circle" };
-
-function ago(iso: string) {
-  const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
-  if (m < 1) return "just now";
-  if (m < 60) return `${m} min ago`;
-  const h = Math.round(m / 60);
-  return h < 24 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
-}
-
-function time12(hhmm: string) {
-  const [h, m] = hhmm.split(":").map(Number);
-  return `${h % 12 === 0 ? 12 : h % 12}:${String(m).padStart(2, "0")} ${h >= 12 ? "PM" : "AM"}`;
-}
 
 // Caretaker side: Family · Alerts · Settings, with a detail screen per parent.
 export function CaregiverScreen({ name, lang, onLang, onSignOut }: { name: string; lang: Lang; onLang: (l: Lang) => void; onSignOut: () => void }) {
@@ -63,6 +35,14 @@ export function CaregiverScreen({ name, lang, onLang, onSignOut }: { name: strin
   const [banner, setBanner] = useState<FeedItem | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const since = useRef(new Date().toISOString());
+  // The home hardware's emergency (MQTT) alert: full-screen siren + vibration until handled.
+  const [emergency, setEmergency] = useState<Emergency | null>(null);
+  const [handledBy, setHandledBy] = useState<string | null>(null);
+  const emergencyRef = useRef<Emergency | null>(null);
+  emergencyRef.current = emergency;
+  const alarmed = useRef(new Set<string>());
+  const familyRef = useRef<ElderOverview[] | null>(null);
+  familyRef.current = family;
   const slide = useRef(new Animated.Value(-140)).current;
 
   const showBanner = useCallback(
@@ -74,6 +54,21 @@ export function CaregiverScreen({ name, lang, onLang, onSignOut }: { name: strin
     },
     [slide]
   );
+
+  const raiseEmergency = useCallback((alertId: string, elderId: string, message: string, elderName?: string) => {
+    if (alarmed.current.has(alertId)) return; // already ringing for this one (live stream and feed both report it)
+    alarmed.current.add(alertId);
+    const parent = familyRef.current?.find((f) => f.elder.id === elderId)?.elder;
+    setHandledBy(null);
+    setEmergency((prev) => ({
+      alertId,
+      elderId,
+      elderName: parent?.name ?? elderName ?? "",
+      message,
+      phone: parent?.phone ?? null,
+      count: prev && prev.elderId === elderId ? prev.count + 1 : 1,
+    }));
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -96,18 +91,35 @@ export function CaregiverScreen({ name, lang, onLang, onSignOut }: { name: strin
       try {
         const { items, serverTime } = await fetchFeed(since.current);
         since.current = serverTime;
+        // Backup for the live stream: an emergency the stream missed still sets off the alarm.
+        for (const item of items) if (item.emergency && item.alertId) raiseEmergency(item.alertId, item.elderId, item.body, item.elderName);
+        const normal = items.filter((i) => !i.emergency);
         if (items.length) {
-          showBanner(items[0]);
+          if (normal.length) showBanner(normal[0]);
           setRefreshKey((k) => k + 1);
           load();
         }
       } catch {}
     }, 10_000);
+    // Event-driven: the server pushes each alert the moment it happens while the app is open.
+    const closeEvents = openCareEvents((event) => {
+      const p = event.payload ?? {};
+      if (event.type === "alert.created" && p.kind === "DEVICE_ALERT") {
+        raiseEmergency(String(p.id), event.elderId, String(p.message ?? ""));
+        setRefreshKey((k) => k + 1);
+        load();
+      }
+      // Someone tapped "I'm on it" (here, on the laptop, or a sibling): stop the alarm everywhere.
+      if (event.type === "alert.updated" && p.kind === "DEVICE_ALERT" && p.acknowledgedAt) {
+        if (emergencyRef.current?.elderId === event.elderId) setHandledBy(String(p.acknowledgedBy ?? "Someone"));
+      }
+    });
     return () => {
       clearInterval(timer);
       clearInterval(feedTimer);
+      closeEvents();
     };
-  }, [load, showBanner]);
+  }, [load, showBanner, raiseEmergency]);
 
   const refresh = async () => {
     setRefreshing(true);
@@ -126,6 +138,22 @@ export function CaregiverScreen({ name, lang, onLang, onSignOut }: { name: strin
   const alerts = family.flatMap((f) => f.openAlerts.map((a) => ({ ...a, elderName: f.elder.name })));
   const urgentCount = alerts.filter((a) => a.severity !== "info").length;
   const parent = family.find((f) => f.elder.id === selected);
+
+  const alarmView = emergency && (
+    <EmergencyAlarm
+      emergency={emergency}
+      onAcknowledge={async () => {
+        await acknowledgeAlert(emergency.alertId);
+        load();
+        setRefreshKey((k) => k + 1);
+      }}
+      handledBy={handledBy}
+      onClose={() => {
+        setEmergency(null);
+        setHandledBy(null);
+      }}
+    />
+  );
 
   const bannerView = banner && (
     <Animated.View style={[styles.banner, { transform: [{ translateY: slide }] }, banner.severity === "critical" && { backgroundColor: colors.bad }]}>
@@ -152,14 +180,26 @@ export function CaregiverScreen({ name, lang, onLang, onSignOut }: { name: strin
   if (parent)
     return (
       <View style={{ flex: 1 }}>
-        <ParentDetail parent={parent} lang={lang} refreshKey={refreshKey} onBack={() => setSelected(null)} onChanged={load} />
+        <ParentDetail
+          parent={parent}
+          lang={lang}
+          refreshKey={refreshKey}
+          onBack={() => setSelected(null)}
+          onChanged={load}
+          onRemoved={() => {
+            setSelected(null);
+            load();
+          }}
+        />
         {bannerView}
+        {alarmView}
       </View>
     );
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       {bannerView}
+      {alarmView}
       <ScrollView contentContainerStyle={{ padding: 18, gap: 14, paddingBottom: 30 }} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}>
         {tab === "family" && (
           <>
@@ -286,92 +326,6 @@ export function CaregiverScreen({ name, lang, onLang, onSignOut }: { name: strin
   );
 }
 
-function ParentDetail({ parent, lang, refreshKey, onBack, onChanged }: { parent: ElderOverview; lang: Lang; refreshKey: number; onBack: () => void; onChanged: () => void }) {
-  const [talks, setTalks] = useState<ConversationSummary[] | null>(null);
-  useEffect(() => {
-    fetchConversations(parent.elder.id)
-      .then(setTalks)
-      .catch(() => setTalks([]));
-  }, [parent.elder.id, refreshKey]);
-
-  return (
-    <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScreenHeader title={parent.elder.name} onBack={onBack} />
-      <ScrollView contentContainerStyle={{ padding: 18, gap: 14, paddingBottom: 30 }}>
-        {parent.elder.phone && (
-          <Pressable onPress={() => Linking.openURL(`tel:${parent.elder.phone}`)} style={styles.callButton} accessibilityRole="button">
-            <Icon name="call" size={20} color={colors.white} />
-            <Text style={styles.callText}>
-              {t(lang, "call")} {parent.elder.name.split(" ")[0]}
-            </Text>
-          </Pressable>
-        )}
-
-        {parent.openAlerts.map((a) => (
-          <Card key={a.id} style={{ gap: 6, borderLeftWidth: 5, borderLeftColor: a.severity === "critical" ? colors.bad : colors.warn }}>
-            <Text style={styles.alertTitle}>{a.title}</Text>
-            <Text style={styles.alertMsg}>{a.message}</Text>
-            <Pressable
-              onPress={async () => {
-                await acknowledgeAlert(a.id).catch(() => {});
-                onChanged();
-              }}
-              style={styles.ack}
-            >
-              <Text style={styles.ackText}>{t(lang, "onIt")}</Text>
-            </Pressable>
-          </Card>
-        ))}
-
-        <MessagesSection elderId={parent.elder.id} elderName={parent.elder.name} lang={lang} refreshKey={refreshKey} />
-
-        <Card style={{ gap: 10 }}>
-          <Text style={styles.name}>{t(lang, "today")}</Text>
-          {parent.timeline.length === 0 && <Text style={styles.sub}>{t(lang, "none")}</Text>}
-          {parent.timeline.map((c) => {
-            const d = DOT[c.status] ?? DOT.PENDING;
-            return (
-              <View key={c.id} style={styles.row}>
-                <View style={[styles.dot, { backgroundColor: d.color }]}>{d.icon && <Icon name={d.icon} size={14} color={colors.white} />}</View>
-                <Text style={{ width: 76, color: colors.muted, fontWeight: "600" }}>{time12(c.time)}</Text>
-                <Text style={{ flex: 1, color: colors.ink, fontWeight: "600" }}>{c.label}</Text>
-              </View>
-            );
-          })}
-        </Card>
-
-        <Text style={[styles.name, { marginTop: 4 }]}>{t(lang, "conversations")}</Text>
-        {!talks && <ActivityIndicator color={colors.accent} />}
-        {talks?.length === 0 && <Text style={styles.sub}>{t(lang, "noTalk")}</Text>}
-        {talks?.map((c) => {
-          const mood = c.mood ? MOOD[c.mood] : null;
-          return (
-            <Card key={c.id} style={{ gap: 8 }}>
-              <View style={[styles.row, { flexWrap: "wrap", gap: 6 }]}>
-                <Text style={styles.meta}>{new Date(c.startedAt).toLocaleString("en-IN", { weekday: "short", hour: "numeric", minute: "2-digit" })}</Text>
-                {c.usedVoice && <Pill label="Voice" tone="accent" icon="mic" />}
-                {mood && <Pill label={mood.label} tone={mood.tone} />}
-                {!c.endedAt && <Pill label={t(lang, "talkingNow")} tone="good" />}
-              </View>
-              <Text style={styles.talk}>
-                {!c.endedAt && c.summary ? <Text style={{ fontWeight: "700", color: colors.accent }}>{t(lang, "soFar")} </Text> : null}
-                {c.summary ?? "…"}
-              </Text>
-              {c.concerns.length > 0 && (
-                <View style={[styles.row, { flexWrap: "wrap", gap: 6 }]}>
-                  {c.concerns.map((x) => (
-                    <Pill key={x} label={x} tone="warn" />
-                  ))}
-                </View>
-              )}
-            </Card>
-          );
-        })}
-      </ScrollView>
-    </View>
-  );
-}
-
 function Dots({ items }: { items: ElderOverview["timeline"] }) {
   return (
     <View style={[styles.row, { flexWrap: "wrap", gap: 8 }]}>
@@ -443,8 +397,6 @@ const styles = StyleSheet.create({
   choiceOn: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
   choiceText: { fontSize: 18, fontWeight: "800", color: colors.ink },
   signOut: { flexDirection: "row", gap: 8, alignItems: "center", justifyContent: "center", paddingVertical: 18 },
-  callButton: { flexDirection: "row", gap: 10, alignItems: "center", justifyContent: "center", backgroundColor: colors.accent, borderRadius: radius.md, minHeight: 56 },
-  callText: { color: colors.white, fontSize: 17, fontWeight: "800" },
   tabBar: { flexDirection: "row", borderTopWidth: 1, borderTopColor: colors.line, backgroundColor: colors.surface, paddingBottom: 6 },
   tab: { flex: 1, alignItems: "center", paddingVertical: 8, gap: 2 },
   tabLabel: { fontSize: 12, fontWeight: "700", color: colors.muted },

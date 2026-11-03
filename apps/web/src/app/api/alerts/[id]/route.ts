@@ -16,5 +16,14 @@ export const PATCH = route<{ params: Promise<{ id: string }> }>(async (request, 
     data: { acknowledgedAt: existing.acknowledgedAt ?? new Date(), acknowledgedBy: existing.acknowledgedBy ?? caregiver.name },
   });
   emitCareEvent({ elderId: alert.elderId, type: "alert.updated", payload: alert });
+
+  // Several presses of the home device's button are one emergency: handling one handles them all.
+  if (alert.kind === "DEVICE_ALERT") {
+    const others = await prisma.alert.findMany({ where: { elderId: alert.elderId, kind: "DEVICE_ALERT", acknowledgedAt: null } });
+    for (const other of others) {
+      const done = await prisma.alert.update({ where: { id: other.id }, data: { acknowledgedAt: alert.acknowledgedAt, acknowledgedBy: alert.acknowledgedBy } });
+      emitCareEvent({ elderId: done.elderId, type: "alert.updated", payload: done });
+    }
+  }
   return NextResponse.json({ alert });
 });

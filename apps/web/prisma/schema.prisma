@@ -22,6 +22,7 @@ model Elder {
   language     String   @default("en") // "en" | "hi" — language the companion and spoken reminders use
   profile      String?  // free-text notes the AI companion is grounded with: interests, family names, routine, health context
   pairingCode  String?  @unique // 6-digit code the senior app / hub enters once to pair with this elder
+  helpCaregiverId String? // who the Help button calls; null = first caregiver with a phone number
   createdAt    DateTime @default(now())
 
   caregivers     CaregiverLink[]
@@ -45,6 +46,7 @@ model Caregiver {
   email        String   @unique
   passwordHash String?  // scrypt hash (see src/lib/auth.ts); null for legacy rows created before auth existed
   pushToken    String?  // Expo push token from the caregiver mode of the mobile app, for alerts
+  phone        String?  // called by the elder's Help button
   createdAt    DateTime @default(now())
 
   elders    CaregiverLink[]

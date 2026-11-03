@@ -120,6 +120,17 @@ export function MessagesSection({ elderId, elderName, lang, refreshKey }: { elde
       {!thread && <ActivityIndicator color={colors.accent} />}
       {thread?.slice(-8).map((m) => {
         const mine = m.direction === "TO_ELDER";
+        if (m.kind === "question") {
+          return (
+            <View key={m.id} style={[styles.bubble, styles.theirs, styles.question]}>
+              <Text style={[styles.meta, { color: "#92400E" }]}>
+                {first} {t(lang, "askedSaathi")} · {ago(m.createdAt)}
+              </Text>
+              <Text style={styles.text}>{m.text}</Text>
+              <Text style={[styles.meta, { color: "#92400E", marginTop: 4, marginBottom: 0 }]}>{t(lang, "replyToTell").replace("{name}", first)}</Text>
+            </View>
+          );
+        }
         return (
           <View key={m.id} style={[styles.bubble, mine ? styles.mine : styles.theirs]}>
             <Text style={[styles.meta, mine && { color: "rgba(255,255,255,0.85)" }]}>
@@ -172,6 +183,7 @@ export function MessagesSection({ elderId, elderName, lang, refreshKey }: { elde
 }
 
 const styles = StyleSheet.create({
+  question: { backgroundColor: "#FFFBEB", borderColor: "#FDE68A", borderWidth: 1.5 },
   title: { fontSize: 17, fontWeight: "700", color: colors.ink },
   bubble: { maxWidth: "88%", borderRadius: 16, paddingHorizontal: 12, paddingVertical: 9, gap: 4 },
   mine: { alignSelf: "flex-end", backgroundColor: colors.accent, borderBottomRightRadius: 4 },

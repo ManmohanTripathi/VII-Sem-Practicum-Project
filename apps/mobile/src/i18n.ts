@@ -47,6 +47,9 @@ const STRINGS = {
     helpConfirmTitle: "Call for help?",
     helpConfirmBody: "This will alert your family right away.",
     helpYes: "Yes, alert them",
+    helpConfirmCall: "This will alert your family and call {name} right away.",
+    helpYesCall: "Yes, call {name}",
+    callingName: "Calling {name}…",
     cancel: "Cancel",
     quickQuestions: "A few quick questions",
     switch: "Switch profile / server",
@@ -108,6 +111,10 @@ const STRINGS = {
     // family messages
     familyTile: "Family",
     messageFrom: "Message from {name}",
+    askedName: "Saathi asked {name} for you",
+    waitingReply: "Waiting for their answer",
+    askedSaathi: "asked Saathi",
+    replyToTell: "Reply below — Saathi will tell {name}",
     playAgain: "Play again",
     holdToReply: "Hold to reply",
     replySent: "Sent to {name}.",
@@ -162,6 +169,9 @@ const STRINGS = {
     helpConfirmTitle: "मदद बुलाएँ?",
     helpConfirmBody: "इससे आपके परिवार को तुरंत सूचना मिलेगी।",
     helpYes: "हाँ, बताइए",
+    helpConfirmCall: "इससे परिवार को तुरंत सूचना मिलेगी और {name} को फ़ोन लगेगा।",
+    helpYesCall: "हाँ, {name} को फ़ोन करें",
+    callingName: "{name} को फ़ोन लग रहा है…",
     cancel: "रद्द करें",
     quickQuestions: "कुछ छोटे सवाल",
     switch: "प्रोफ़ाइल / सर्वर बदलें",
@@ -218,6 +228,10 @@ const STRINGS = {
     reminderCount: "रिमाइंडर पूरे",
     familyTile: "परिवार",
     messageFrom: "{name} का संदेश",
+    askedName: "साथी ने आपके लिए {name} से पूछा है",
+    waitingReply: "जवाब का इंतज़ार है",
+    askedSaathi: "ने साथी से पूछा",
+    replyToTell: "नीचे जवाब दें — साथी {name} को बता देगी",
     playAgain: "फिर से सुनें",
     holdToReply: "दबाकर जवाब दें",
     replySent: "{name} को भेज दिया।",
@@ -254,13 +268,39 @@ export function t(lang: Lang, key: StringKey) {
   return STRINGS[lang][key];
 }
 
+// Saathi is a soft-spoken woman: prefer a female system voice for the language.
+const FEMALE = /lekha|veena|kiyara|neel|isha|samantha|karen|moira|tessa|fiona|serena|kate|susan|victoria|allison|ava|zoe|female/i;
+const MALE = /rishi|daniel|aaron|alex|fred|tom|oliver|arthur|gordon|male/i;
+const voiceFor: Partial<Record<string, string | null>> = {};
+
+async function femaleVoice(language: string) {
+  if (language in voiceFor) return voiceFor[language] ?? undefined;
+  try {
+    const all = (await Speech.getAvailableVoicesAsync()).filter((v) => v.language.replace("_", "-").startsWith(language.slice(0, 2)));
+    const local = all.filter((v) => v.language.replace("_", "-") === language);
+    const pick = (list: Speech.Voice[]) =>
+      list.find((v) => FEMALE.test(`${v.name} ${v.identifier}`) && v.quality === Speech.VoiceQuality.Enhanced) ??
+      list.find((v) => FEMALE.test(`${v.name} ${v.identifier}`)) ??
+      list.find((v) => !MALE.test(`${v.name} ${v.identifier}`));
+    voiceFor[language] = (pick(local) ?? pick(all))?.identifier ?? null;
+  } catch {
+    voiceFor[language] = null;
+  }
+  return voiceFor[language] ?? undefined;
+}
+
 // On-device speech, used when the server has no ElevenLabs audio for a sentence.
 export function say(text: string, lang: Lang, onDone?: () => void) {
   Speech.stop();
-  Speech.speak(text.replace(/[^\p{L}\p{N}\p{P}\s]/gu, ""), {
-    language: /[ऀ-ॿ]/.test(text) || lang === "hi" ? "hi-IN" : "en-IN",
-    rate: 0.9,
-    onDone,
-    onStopped: onDone,
-  });
+  const language = /[ऀ-ॿ]/.test(text) || lang === "hi" ? "hi-IN" : "en-IN";
+  femaleVoice(language).then((voice) =>
+    Speech.speak(text.replace(/[^\p{L}\p{N}\p{P}\s]/gu, ""), {
+      language,
+      voice,
+      pitch: 1.08,
+      rate: 0.85,
+      onDone,
+      onStopped: onDone,
+    })
+  );
 }

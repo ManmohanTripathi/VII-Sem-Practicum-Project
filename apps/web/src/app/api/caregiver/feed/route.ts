@@ -14,6 +14,8 @@ type FeedItem = {
   body: string;
   severity: "info" | "warning" | "critical";
   at: string;
+  alertId?: string;
+  emergency?: boolean; // hardware MQTT alert: the app sounds the alarm
 };
 
 // GET /api/caregiver/feed?since=<ISO> — what happened since the caregiver's phone last checked:
@@ -41,14 +43,16 @@ export const GET = route(async (request) => {
       body: a.message,
       severity: a.severity as FeedItem["severity"],
       at: a.createdAt.toISOString(),
+      alertId: a.id,
+      emergency: a.kind === "DEVICE_ALERT",
     })),
     ...replies.map((m) => ({
       id: `message:${m.id}`,
       type: "message" as const,
       elderId: m.elderId,
       elderName: m.elder.name,
-      title: `${m.elder.name.split(" ")[0]} sent a voice message`,
-      body: m.text ? `“${m.text}”` : "Tap to listen",
+      title: m.kind === "question" ? `${m.elder.name.split(" ")[0]} asked Saathi something` : `${m.elder.name.split(" ")[0]} sent a voice message`,
+      body: m.kind === "question" ? `“${m.text}” Reply so Saathi can tell them.` : m.text ? `“${m.text}”` : "Tap to listen",
       severity: "warning" as const,
       at: m.createdAt.toISOString(),
     })),

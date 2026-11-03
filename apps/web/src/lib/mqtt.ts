@@ -7,9 +7,13 @@ import type { MqttClient } from "mqtt";
 //   hub -> backend: telemetry | event | reply | status
 //   backend -> hub: reminder | say | command
 // The ESP32-CAM's own "home/door/status" topic is deliberately outside this namespace and untouched.
+// The hardware's alert topic (MQTT_ALERT_TOPIC, default "project/phase3sem7/alert") is subscribed to
+// and turned into caregiver alerts (see device-alerts.ts).
 
 export const TOPIC_PREFIX = "carecircle/v1/hub";
 const INBOUND = new Set(["telemetry", "event", "reply", "status"]);
+
+const alertTopic = () => process.env.MQTT_ALERT_TOPIC || "project/phase3sem7/alert";
 
 const g = globalThis as unknown as { ccMqtt?: MqttClient };
 
@@ -41,10 +45,21 @@ export async function startMqttBridge() {
   client.on("connect", () => {
     console.log(`[mqtt] connected to ${url}`);
     client.subscribe(`${TOPIC_PREFIX}/+/+`, { qos: 1 });
+    client.subscribe(alertTopic(), { qos: 1 });
   });
   client.on("error", (err) => console.warn("[mqtt]", err.message));
 
   client.on("message", async (topic, buf) => {
+    if (topic === alertTopic()) {
+      try {
+        const { handleDeviceAlert } = await import("@/lib/device-alerts");
+        const raised = await handleDeviceAlert(buf.toString());
+        console.log(`[mqtt] alert on ${topic}: "${buf.toString().slice(0, 80)}" -> ${raised.length} caregiver alert(s)`);
+      } catch (err) {
+        console.warn(`[mqtt] couldn't handle alert on ${topic}:`, (err as Error).message);
+      }
+      return;
+    }
     const parts = topic.split("/");
     const [deviceId, channel] = parts.slice(-2);
     if (parts.length !== 5 || !INBOUND.has(channel)) return; // ignore our own outbound channels

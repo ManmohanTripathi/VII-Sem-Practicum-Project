@@ -4,6 +4,7 @@ import { uniquePairingCode } from "@/lib/pairing";
 import { ProfileSettings } from "@/components/ProfileSettings";
 import { DevicesCard } from "@/components/DevicesCard";
 import { DangerZone } from "@/components/DangerZone";
+import { HelpContactCard } from "@/components/HelpContactCard";
 
 export const dynamic = "force-dynamic";
 
@@ -13,11 +14,15 @@ export default async function SettingsTab({ params }: { params: Promise<{ id: st
   if (!elder.pairingCode) {
     elder = { ...elder, ...(await prisma.elder.update({ where: { id }, data: { pairingCode: await uniquePairingCode() } })) };
   }
-  const devices = await prisma.device.findMany({ where: { elderId: id }, orderBy: { createdAt: "asc" } });
+  const [devices, links] = await Promise.all([
+    prisma.device.findMany({ where: { elderId: id }, orderBy: { createdAt: "asc" } }),
+    prisma.caregiverLink.findMany({ where: { elderId: id }, include: { caregiver: { select: { id: true, name: true, phone: true } } }, orderBy: { id: "asc" } }),
+  ]);
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-5">
       <div className="space-y-5 lg:col-span-3">
         <ProfileSettings elder={plain(elder)} />
+        <HelpContactCard elderId={id} elderName={elder.name} people={links.map((l) => l.caregiver)} chosenId={elder.helpCaregiverId} />
         <DangerZone elderId={id} elderName={elder.name} />
       </div>
       <div className="lg:col-span-2">

@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { requireElderAccess } from "@/lib/auth";
 import { route } from "@/lib/http";
 import { readAudio } from "@/lib/storage";
+import { audioResponse } from "@/lib/audio-response";
 
 export const dynamic = "force-dynamic";
 
@@ -14,7 +15,5 @@ export const GET = route<{ params: Promise<{ id: string }> }>(async (request, { 
   await requireElderAccess(request, message.elderId);
   if (!message.audioFile) return NextResponse.json({ error: "No audio for this message" }, { status: 404 });
   const data = await readAudio(message.audioFile);
-  return new NextResponse(new Uint8Array(data), {
-    headers: { "Content-Type": message.audioMime || "application/octet-stream", "Content-Length": String(data.length), "Cache-Control": "private, max-age=3600" },
-  });
+  return audioResponse(request, new Uint8Array(data), message.audioMime || "application/octet-stream", "private, max-age=3600");
 });
