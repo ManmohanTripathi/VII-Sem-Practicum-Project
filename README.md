@@ -113,7 +113,7 @@ python3.11 -m venv .venv && .venv/bin/pip install -r requirements.txt
 VISION_TOKEN=... BACKEND_URL=http://localhost:3000 .venv/bin/uvicorn vision.app:app --port 8100
 ```
 
-The service watches every parent with a camera set on the dashboard (`{cameraUrl}/stream`). For a demo without the ESP32-CAM, use the laptop webcam: `CAMERA_SOURCES=<elderId>=0`. Enrol faces as described in `services/vision/faces/README.md`. Try the models on a photo with `curl -F file=@photo.jpg "localhost:8100/analyze?elder_id=<elderId>"`.
+The service watches the ESP32-CAM of every parent with a camera set on the dashboard (the same `{cameraUrl}` the live feed uses). By default it reads `{cameraUrl}/stream`. Many ESP32-CAM sketches serve only one stream viewer at a time; if the dashboard's live feed stops while the service runs, set `CAMERA_PATH` to a snapshot path your firmware has (for example `CAMERA_PATH=/capture` or `/cam-hi.jpg`), and the service fetches one JPEG per second instead. `CAMERA_SOURCES=<elderId>=<url>` overrides the camera address for one parent. Enrol faces as described in `services/vision/faces/README.md`. Try the models on a photo with `curl -F file=@photo.jpg "localhost:8100/analyze?elder_id=<elderId>"`.
 
 ## Configuration
 

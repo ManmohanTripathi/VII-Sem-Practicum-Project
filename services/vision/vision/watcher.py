@@ -6,6 +6,7 @@ import time
 
 import cv2
 import httpx
+import numpy as np
 
 from . import config
 from .pipeline import analyze
@@ -33,7 +34,7 @@ def camera_sources() -> dict[str, str]:
     try:
         r = httpx.get(f"{config.BACKEND_URL}/api/vision/cameras", headers=_headers(), timeout=10)
         r.raise_for_status()
-        sources = {c["elderId"]: c["streamUrl"] for c in r.json()["cameras"]}
+        sources = {c["elderId"]: c["streamUrl"].removesuffix("/stream") + config.CAMERA_PATH for c in r.json()["cameras"]}
     except (httpx.HTTPError, KeyError, ValueError) as err:
         log.warning("couldn't load cameras from the backend: %s", err)
     for pair in filter(None, (p.strip() for p in config.CAMERA_SOURCES.split(","))):
@@ -60,6 +61,8 @@ class CameraWatcher(threading.Thread):
         return cap
 
     def run(self):
+        if self.source.startswith("http") and not self.source.endswith("/stream"):
+            return self.run_snapshots()
         cap, next_at = None, 0.0
         while not self.stopped.is_set():
             if cap is None or not cap.isOpened():
@@ -82,6 +85,23 @@ class CameraWatcher(threading.Thread):
                 self.step(frame, now)
         if cap is not None:
             cap.release()
+
+    def run_snapshots(self):
+        """One JPEG per analysis from the ESP32-CAM's snapshot URL (leaves its stream free)."""
+        with httpx.Client(timeout=10) as client:
+            while not self.stopped.is_set():
+                started = time.monotonic()
+                try:
+                    r = client.get(self.source)
+                    r.raise_for_status()
+                    frame = cv2.imdecode(np.frombuffer(r.content, np.uint8), cv2.IMREAD_COLOR)
+                    if frame is not None:
+                        self.step(frame, started)
+                except httpx.HTTPError as err:
+                    log.warning("camera %s not reachable (%s): %s", self.elder_id, self.source, err)
+                    self.stopped.wait(10)
+                    continue
+                self.stopped.wait(max(0.0, config.ANALYZE_EVERY_S - (time.monotonic() - started)))
 
     def step(self, frame, now: float):
         with_faces = now - self.last_face_at >= config.FACE_EVERY_S
