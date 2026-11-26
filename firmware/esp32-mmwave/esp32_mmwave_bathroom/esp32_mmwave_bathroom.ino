@@ -1,24 +1,25 @@
-// CareCircle bathroom fall sensor: ESP32 + HLK-LD2410C mmWave radar on the ceiling.
+// CareCircle bathroom fall sensor: ESP32 + HLK-LD2410C mmWave radar on the ceiling. Nothing else
+// is needed: no door switch, no camera, no microphone.
 //
-// No camera, no microphone. The radar looks down, so the distance to the person is a measure of
-// height: a person at floor level is far from the sensor. The ESP32 runs the whole safety loop by
-// itself and only tells the backend about real emergencies:
+// The radar looks down, so the distance to the person is a measure of height: a person at floor
+// level is far from the sensor. A person who is breathing still gives "still energy", so the radar
+// keeps seeing someone who lies without moving. The ESP32 runs the safety loop by itself and only
+// tells the backend about real emergencies:
 //
-//   EMPTY --door opens + presence--> OCCUPIED
-//   OCCUPIED --at floor level, still, ON_FLOOR_S--> CHECKING (buzzer beeps)
-//   OCCUPIED --in the room longer than LONG_STAY_MIN--> CHECKING
-//   OCCUPIED --presence lost, door still closed, LOST_S--> CHECKING
-//   CHECKING --"I am OK" pressed--> OCCUPIED (or EMPTY)
-//   CHECKING --no press in CHECK_S--> alarm published (fall | long_stay | presence_lost)
+//   EMPTY --presence for ENTER_S--> OCCUPIED
+//   OCCUPIED --no presence for LEAVE_S--> EMPTY (the person left)
+//   OCCUPIED --at floor level and not moving for ON_FLOOR_S--> CHECKING (fall)
+//   OCCUPIED --in the room longer than LONG_STAY_MIN--> CHECKING (long stay)
+//   CHECKING --the person gets up / leaves (or presses the optional "I am OK" button)--> back to normal
+//   CHECKING --still the same after CHECK_S--> alarm published: fall (repeated every CHECK_S while
+//            the person stays down) or long_stay (once, then the long-stay timer starts again)
 //
-// Everything is optional: without the radar the board only reports {"radar":"missing"}; without a
-// door switch (DOOR_PIN = -1) entry is detected from presence alone.
+// Without the radar frames the board only reports {"radar":"missing"} and never alarms.
 //
 // Wiring (ESP32 DevKit):
 //   LD2410C  VCC -> 5V, GND -> GND, TX -> GPIO16 (RX2), RX -> GPIO17 (TX2)   (UART 256000 baud)
-//   Door reed switch  -> GPIO27 and GND  (closed = door shut)
-//   "I am OK" button  -> GPIO26 and GND
-//   Active buzzer     -> GPIO25 (through an NPN transistor), status LED -> GPIO2 (onboard)
+//   Optional: active buzzer -> GPIO25 (through an NPN transistor), "I am OK" button -> GPIO26 and GND.
+//   Leave BUZZER_PIN / OK_PIN at -1 if they are not fitted. Status LED: onboard GPIO2.
 //
 // Libraries: PubSubClient (Nick O'Leary). Board: "ESP32 Dev Module".
 
@@ -36,17 +37,18 @@ const char* SENSOR_ID     = "bathroom-1";
 const char* ROOM          = "bathroom";
 
 const int RADAR_RX = 16, RADAR_TX = 17;
-const int DOOR_PIN = 27;       // -1 if there is no door switch
-const int OK_PIN = 26;
-const int BUZZER_PIN = 25;
+const int BUZZER_PIN = -1;     // optional
+const int OK_PIN = -1;         // optional
 const int LED_PIN = 2;
 
 // Measure these in the real bathroom (lie on the floor, sit, stand) and adjust.
 const int FLOOR_CM = 210;            // still target farther than this from the ceiling = floor level
 const int MOVE_MAX_ON_FLOOR = 20;    // moving energy below this = not moving
+const unsigned long ENTER_S = 2;
+const unsigned long LEAVE_S = 10;
 const unsigned long ON_FLOOR_S = 30;
+const unsigned long UP_AGAIN_S = 5;  // upright this long during a check = the person is fine
 const unsigned long LONG_STAY_MIN = 30;
-const unsigned long LOST_S = 20;
 const unsigned long CHECK_S = 60;
 const unsigned long STATUS_EVERY_S = 30;
 
@@ -102,7 +104,6 @@ bool present() { return radarConnected() && reading.target != 0; }
 bool atFloorLevel() {
   return present() && (reading.target & 2) && reading.stillCm >= FLOOR_CM && reading.moveEnergy < MOVE_MAX_ON_FLOOR;
 }
-bool doorClosed() { return DOOR_PIN < 0 || digitalRead(DOOR_PIN) == LOW; }
 
 // ---------- network ----------
 WiFiClient net;
@@ -136,9 +137,8 @@ void keepConnected() {
 }
 
 // ---------- state machine ----------
-unsigned long enteredAt = 0, floorSince = 0, lostSince = 0, checkStartedAt = 0, doorOpenedAt = 0;
+unsigned long seenSince = 0, goneSince = 0, enteredAt = 0, floorSince = 0, uprightSince = 0, checkStartedAt = 0;
 const char* checkReason = "";
-bool doorWasClosed = true;
 
 void setState(State s) {
   if (s == state) return;
@@ -149,68 +149,83 @@ void setState(State s) {
 void startCheck(const char* reason) {
   checkReason = reason;
   checkStartedAt = millis();
+  uprightSince = 0;
   setState(CHECKING);
 }
 
+bool okPressed() { return OK_PIN >= 0 && digitalRead(OK_PIN) == LOW; }
+
 void beep(unsigned long now) {
+  if (BUZZER_PIN < 0) return;
   // checking: short beeps every second; otherwise quiet
   digitalWrite(BUZZER_PIN, state == CHECKING && (now / 500) % 2 == 0 ? HIGH : LOW);
 }
 
 void step() {
   unsigned long now = millis();
-  bool closed = doorClosed();
-  if (doorWasClosed && !closed) doorOpenedAt = now;
-  doorWasClosed = closed;
-  // The person can leave through an open door, or the radar can lose them a little after the door
-  // opened: both mean "left", not "lost".
-  bool leftRoom = DOOR_PIN < 0 || !closed || (doorOpenedAt && now - doorOpenedAt < 60000UL);
+  bool here = present();
+  if (here) {
+    goneSince = 0;
+    if (!seenSince) seenSince = now;
+  } else {
+    seenSince = 0;
+    if (!goneSince) goneSince = now;
+  }
+  bool left = !here && now - goneSince >= LEAVE_S * 1000;
 
   switch (state) {
     case EMPTY:
-      if (present()) {
+      if (here && now - seenSince >= ENTER_S * 1000) {
         enteredAt = now;
-        floorSince = lostSince = 0;
+        floorSince = 0;
         setState(OCCUPIED);
       }
       break;
 
     case OCCUPIED:
     case ON_FLOOR:
-      if (!present()) {
-        if (leftRoom) {
-          setState(EMPTY);
-          break;
-        }
-        if (!lostSince) lostSince = now;
-        if (now - lostSince >= LOST_S * 1000) startCheck("presence_lost");
+      if (left) {
+        setState(EMPTY);
         break;
       }
-      lostSince = 0;
       if (atFloorLevel()) {
         if (!floorSince) floorSince = now;
         setState(ON_FLOOR);
         if (now - floorSince >= ON_FLOOR_S * 1000) startCheck("fall");
-      } else {
+      } else if (here) {
         floorSince = 0;
         setState(OCCUPIED);
       }
       if (state != CHECKING && now - enteredAt >= LONG_STAY_MIN * 60000UL) startCheck("long_stay");
       break;
 
-    case CHECKING:
-      if (digitalRead(OK_PIN) == LOW) {  // "I am OK"
+    case CHECKING: {
+      // The person is fine if they press "I am OK", leave, or (after a fall check) are upright again.
+      bool upright = here && !atFloorLevel();
+      if (upright) {
+        if (!uprightSince) uprightSince = now;
+      } else {
+        uprightSince = 0;
+      }
+      bool recovered = strcmp(checkReason, "fall") == 0 && uprightSince && now - uprightSince >= UP_AGAIN_S * 1000;
+      if (okPressed() || left || recovered) {
         publish("ok");
         enteredAt = now;  // restart the long-stay timer
-        floorSince = lostSince = 0;
-        setState(present() ? OCCUPIED : EMPTY);
+        floorSince = 0;
+        setState(left ? EMPTY : OCCUPIED);
       } else if (now - checkStartedAt >= CHECK_S * 1000) {
         char extra[40] = "";
         if (strcmp(checkReason, "long_stay") == 0) snprintf(extra, sizeof(extra), ",\"minutes\":%lu", (now - enteredAt) / 60000);
         publish(checkReason, extra);
-        checkStartedAt = now;  // keep beeping; repeat the alarm every CHECK_S until someone comes
+        if (strcmp(checkReason, "fall") == 0) {
+          checkStartedAt = now;  // a fall: repeat the alarm every CHECK_S until the person is up
+        } else {
+          enteredAt = now;  // a long stay: one alarm, then watch again (next one after another LONG_STAY_MIN)
+          setState(OCCUPIED);
+        }
       }
       break;
+    }
   }
   beep(now);
 }
@@ -220,9 +235,8 @@ void step() {
 void setup() {
   Serial.begin(115200);
   radar.begin(256000, SERIAL_8N1, RADAR_RX, RADAR_TX);
-  if (DOOR_PIN >= 0) pinMode(DOOR_PIN, INPUT_PULLUP);
-  pinMode(OK_PIN, INPUT_PULLUP);
-  pinMode(BUZZER_PIN, OUTPUT);
+  if (OK_PIN >= 0) pinMode(OK_PIN, INPUT_PULLUP);
+  if (BUZZER_PIN >= 0) pinMode(BUZZER_PIN, OUTPUT);
   pinMode(LED_PIN, OUTPUT);
   WiFi.mode(WIFI_STA);
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
@@ -242,7 +256,7 @@ void loop() {
   mqtt.loop();
 
   if (radarConnected()) step();
-  else digitalWrite(BUZZER_PIN, LOW);  // no radar: never alarm, only report "missing"
+  else if (BUZZER_PIN >= 0) digitalWrite(BUZZER_PIN, LOW);  // no radar: never alarm, only report "missing"
 
   if (now - lastStatusAt >= STATUS_EVERY_S * 1000) {  // heartbeat, so the app knows the sensor is alive
     lastStatusAt = now;

@@ -187,7 +187,7 @@ MQTT only, on `MQTT_MMWAVE_TOPIC` (default `project/phase3sem7/mmwave`). JSON pa
 ```
 
 - `status` every 30 s (heartbeat) and on each state change. The first one makes the "Bathroom sensor" card appear. No heartbeat for 3 minutes gives one `SENSOR_OFFLINE` warning.
-- `fall`, `long_stay`, `presence_lost`: sent only after the sensor's own buzzer check got no "I am OK" press. Each one is a critical `BATHROOM_ALERT` with the siren (at most one per type every 2 minutes).
+- `fall`, `long_stay`: sent only after the sensor's own 60 s check (the person did not get up or leave). Each one is a critical `BATHROOM_ALERT` with the siren (at most one per type every 2 minutes). The backend also accepts `presence_lost` for sensors with a door switch.
 - Without `elderId`, messages go to `MQTT_ALERT_ELDER_ID`, or else to the parents with a camera, like the emergency alert topic.
 - Caregivers read the last state with `GET /api/elders/{id}/mmwave` (`{ "mmwave": null }` when no sensor has reported).
 

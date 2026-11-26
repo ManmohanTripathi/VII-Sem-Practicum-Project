@@ -6,29 +6,36 @@ dashboard and the app behave exactly as before (no card, no alerts, no offline c
 
 ## How it works
 
-The radar is on the ceiling, pointing down, so the distance to a person is a measure of height.
+Only the ESP32 and the radar are needed. The radar is on the ceiling, pointing down, so the distance
+to a person is a measure of height. A breathing person who lies without moving still gives "still
+energy", so the radar keeps seeing them.
 
 | Rule | What happens |
 |---|---|
-| Person at floor level (still target farther than `FLOOR_CM`), not moving, for `ON_FLOOR_S` (30 s) | Buzzer beeps |
-| Person in the bathroom longer than `LONG_STAY_MIN` (30 min) | Buzzer beeps |
-| Radar loses the person, door still closed, for `LOST_S` (20 s) | Buzzer beeps |
-| "I am OK" pressed within `CHECK_S` (60 s) | Back to normal, `{"type":"ok"}` |
-| No press | Publishes `fall`, `long_stay` or `presence_lost`: critical alert with the siren on every caretaker device, repeated every 60 s |
+| Presence for 2 s | `occupied` |
+| No presence for `LEAVE_S` (10 s) | `empty`: the person left |
+| At floor level (still target farther than `FLOOR_CM`) and not moving for `ON_FLOOR_S` (30 s) | Fall check starts (`checking`) |
+| In the bathroom longer than `LONG_STAY_MIN` (30 min) | Long-stay check starts |
+| During a check: the person is upright again for 5 s, or leaves | Back to normal, `{"type":"ok"}` |
+| Fall check still the same after `CHECK_S` (60 s) | Publishes `fall`, repeated every 60 s while the person stays down |
+| Long-stay check still the same after 60 s | Publishes `long_stay` once, then the 30-minute timer starts again |
 
-The board also sends `{"type":"status"}` every 30 s. The dashboard and the caretaker app then show a
-"Bathroom sensor" card. If the heartbeats stop for 3 minutes, caretakers get one "sensor offline"
-warning. Without the radar wired, the board reports `"radar":"missing"` and never alarms.
+Each `fall` or `long_stay` is a critical alert with the siren on every caretaker device. The board also
+sends `{"type":"status"}` every 30 s, so the dashboard and the caretaker app show a "Bathroom sensor"
+card. If the heartbeats stop for 3 minutes, caretakers get one "sensor offline" warning. Without the
+radar frames, the board reports `"radar":"missing"` and never alarms.
 
-## Parts (approximate prices, not verified)
+**Limit:** the radar cannot tell "left the room" from "stopped breathing", because both look like no
+presence. With the radar only, no presence for 10 s counts as "left".
+
+## Parts
 
 | Part | Pin |
 |---|---|
 | HLK-LD2410C (or LD2410B) | VCC 5V, GND, TX → GPIO16, RX → GPIO17 (256000 baud) |
-| Door reed switch + magnet | GPIO27 ↔ GND (closed = door shut). Set `DOOR_PIN = -1` if you have none |
-| Push button "I am OK" | GPIO26 ↔ GND |
-| Active buzzer, 5 V | GPIO25 through an NPN transistor |
 | ESP32 DevKit, 5 V adapter, plastic box | onboard LED on GPIO2 |
+| Optional: active buzzer, 5 V | GPIO25 through an NPN transistor; set `BUZZER_PIN = 25` |
+| Optional: "I am OK" push button | GPIO26 ↔ GND; set `OK_PIN = 26` |
 
 ## Flashing
 
