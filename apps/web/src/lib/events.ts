@@ -19,6 +19,7 @@ export type CareEvent = {
     | "message.played"
     | "device.status"
     | "vision.observation"
+    | "mmwave.status"
     | "note.created";
   payload?: unknown;
 };

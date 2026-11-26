@@ -27,7 +27,7 @@ export function parseDeviceAlert(raw: string): Parsed | null {
   return { message: message.slice(0, 500), elderId: obj ? str(obj.elderId) || undefined : undefined };
 }
 
-async function targetElders(elderId?: string) {
+export async function targetElders(elderId?: string) {
   if (elderId) return prisma.elder.findMany({ where: { id: elderId } });
   const configured = process.env.MQTT_ALERT_ELDER_ID?.trim();
   if (configured) {

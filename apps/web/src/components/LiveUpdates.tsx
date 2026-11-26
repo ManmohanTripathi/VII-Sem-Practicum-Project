@@ -18,7 +18,7 @@ type Payload = Record<string, unknown> & {
 };
 
 // Same list as EMERGENCY_KINDS in lib/alerts.ts (not imported: that module pulls in Prisma).
-const isEmergency = (kind: unknown) => kind === "DEVICE_ALERT" || kind === "FALL_DETECTED";
+const isEmergency = (kind: unknown) => kind === "DEVICE_ALERT" || kind === "FALL_DETECTED" || kind === "BATHROOM_ALERT";
 
 type Heads = { title: string; detail?: string; urgent: boolean };
 

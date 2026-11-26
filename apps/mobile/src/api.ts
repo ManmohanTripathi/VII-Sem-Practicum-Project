@@ -554,6 +554,19 @@ export async function fetchEnvironment(elderId: string): Promise<Environment> {
   const api = await client();
   return (await api.get(`/api/elders/${elderId}/environment`)).data;
 }
+// Optional mmWave bathroom sensor: null until one has reported (then the app shows its card).
+export type BathroomSensor = {
+  sensorId: string;
+  room: string;
+  state: "empty" | "occupied" | "on_floor" | "checking";
+  radar: "ok" | "missing";
+  distanceCm: number | null;
+  at: string;
+};
+export async function fetchBathroomSensor(elderId: string): Promise<BathroomSensor | null> {
+  const api = await client();
+  return (await api.get(`/api/elders/${elderId}/mmwave`)).data.mmwave;
+}
 export async function fetchInsights(elderId: string): Promise<Insights> {
   const api = await client();
   return (await api.get(`/api/elders/${elderId}/insights`)).data;
