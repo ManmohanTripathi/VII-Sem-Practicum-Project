@@ -17,6 +17,9 @@ type Payload = Record<string, unknown> & {
   elderName?: string;
 };
 
+// Same list as EMERGENCY_KINDS in lib/alerts.ts (not imported: that module pulls in Prisma).
+const isEmergency = (kind: unknown) => kind === "DEVICE_ALERT" || kind === "FALL_DETECTED";
+
 type Heads = { title: string; detail?: string; urgent: boolean };
 
 // Turns server events into real-time heads-ups for the family. Returns null for routine updates.
@@ -86,7 +89,7 @@ export function LiveUpdates({ elderId, elderNames = {}, showIndicator = false }:
         const p = event.payload ?? {};
         const name = (p.elderName as string | undefined) ?? names.current[event.elderId] ?? "";
         // The home hardware's emergency alert takes over the screen with a siren.
-        if (event.type === "alert.created" && p.kind === "DEVICE_ALERT") {
+        if (event.type === "alert.created" && isEmergency(p.kind)) {
           setEmergency((prev) => ({
             alertId: String(p.id),
             elderId: event.elderId,
@@ -99,10 +102,10 @@ export function LiveUpdates({ elderId, elderNames = {}, showIndicator = false }:
           }
         }
         // Handled on another device (the phone, a sibling): stop the siren here too.
-        if (event.type === "alert.updated" && p.kind === "DEVICE_ALERT" && p.acknowledgedAt) {
+        if (event.type === "alert.updated" && isEmergency(p.kind) && p.acknowledgedAt) {
           setEmergency((prev) => (prev && prev.elderId === event.elderId ? { ...prev, handledBy: String(p.acknowledgedBy ?? "Someone") } : prev));
         }
-        const h = event.type === "alert.created" && p.kind === "DEVICE_ALERT" ? null : headsUp(event.type, p, name);
+        const h = event.type === "alert.created" && isEmergency(p.kind) ? null : headsUp(event.type, p, name);
         if (h) {
           const href = event.type.startsWith("message") ? `/elders/${event.elderId}/messages` : `/elders/${event.elderId}`;
           toast(h.title, h.urgent ? "bad" : "info", { detail: h.detail, href, durationMs: h.urgent ? 15000 : 8000 });
