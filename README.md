@@ -106,6 +106,8 @@ npm run lint
 ### 5. Camera AI (optional)
 
 > **Full step-by-step guide (flashing the ESP32-CAM, Python 3.11, face photos, checks, troubleshooting): [docs/CAMERA_AI_SETUP.md](docs/CAMERA_AI_SETUP.md).**
+>
+> **Code changes as exact steps for an AI coding assistant: [docs/CAMERA_AI_INTEGRATION_STEPS.md](docs/CAMERA_AI_INTEGRATION_STEPS.md).**
 
 The ESP32-CAM serves its stream to one viewer at a time, so the camera AI service is that viewer: it runs YOLO pose and DeepFace on the frames, and relays the video at `http://<computer-ip>:8100/stream/<elderId>` for the dashboard and the app. In short:
 
