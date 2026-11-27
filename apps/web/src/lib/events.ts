@@ -18,6 +18,7 @@ export type CareEvent = {
     | "message.created"
     | "message.played"
     | "device.status"
+    | "vision.observation"
     | "note.created";
   payload?: unknown;
 };

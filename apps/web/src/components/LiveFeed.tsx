@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 const inputClass =
   "mt-1 w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-accent focus:ring-2 focus:ring-accent-soft";
@@ -26,6 +26,7 @@ export function LiveFeed({
   const [editing, setEditing] = useState(false);
   const [streamError, setStreamError] = useState(false);
   const [nonce, setNonce] = useState(0);
+  const vision = useVision(elderId, !!url);
 
   async function save(newUrl: string) {
     const trimmed = newUrl.trim().replace(/\/$/, "");
@@ -125,8 +126,59 @@ export function LiveFeed({
             </div>
           </>
         )}
+        {vision && !streamError && <VisionBadge vision={vision} elderName={elderName} />}
       </div>
     </div>
+  );
+}
+
+type VisionPerson = { posture: "standing" | "sitting" | "lying" | "unknown"; identity?: string | null };
+type Vision = { people: VisionPerson[]; at: string };
+
+// What the camera AI (services/vision) saw last; polled because it changes every few seconds.
+function useVision(elderId: string, enabled: boolean) {
+  const [vision, setVision] = useState<Vision | null>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    let stop = false;
+    const load = async () => {
+      try {
+        const res = await fetch(`/api/elders/${elderId}/vision`, { cache: "no-store" });
+        if (!res.ok || stop) return;
+        const v: Vision | null = (await res.json()).vision;
+        // Older than a minute: the service stopped; don't show a stale posture.
+        setVision(v && Date.now() - new Date(v.at).getTime() < 60_000 ? v : null);
+      } catch {}
+    };
+    load();
+    const timer = setInterval(load, 5000);
+    return () => {
+      stop = true;
+      clearInterval(timer);
+    };
+  }, [elderId, enabled]);
+  return vision;
+}
+
+function VisionBadge({ vision, elderName }: { vision: Vision; elderName: string }) {
+  const first = elderName.split(" ")[0];
+  const label = vision.people.length
+    ? vision.people
+        .map((p) => {
+          const who = p.identity === "patient" ? first : p.identity && p.identity !== "unknown" ? p.identity : p.identity === "unknown" ? "Unknown person" : "Someone";
+          return p.posture === "unknown" ? who : `${who} · ${p.posture}`;
+        })
+        .join(", ")
+    : "Nobody in view";
+  const lying = vision.people.some((p) => p.posture === "lying");
+  return (
+    <span
+      className={`absolute bottom-3 left-3 rounded-full px-3 py-1 text-xs font-medium backdrop-blur ${
+        lying ? "bg-red-600/80 text-white" : "bg-black/55 text-stone-100"
+      }`}
+    >
+      Camera AI: {label}
+    </span>
   );
 }
 

@@ -12,7 +12,12 @@ export type AlertKind =
   | "HELP_REQUEST"
   | "DISTRESS"
   | "HUB_OFFLINE"
-  | "DEVICE_ALERT";
+  | "DEVICE_ALERT"
+  | "FALL_DETECTED"
+  | "UNKNOWN_PERSON";
+
+// Alerts that take over the caretaker's screen with a siren until someone taps "I'm on it".
+export const EMERGENCY_KINDS: readonly string[] = ["DEVICE_ALERT", "FALL_DETECTED"];
 
 export type NewAlert = {
   elderId: string;

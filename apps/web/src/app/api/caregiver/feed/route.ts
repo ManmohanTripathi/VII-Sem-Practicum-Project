@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireCaregiver } from "@/lib/auth";
 import { route } from "@/lib/http";
+import { EMERGENCY_KINDS } from "@/lib/alerts";
 
 export const dynamic = "force-dynamic";
 
@@ -44,7 +45,7 @@ export const GET = route(async (request) => {
       severity: a.severity as FeedItem["severity"],
       at: a.createdAt.toISOString(),
       alertId: a.id,
-      emergency: a.kind === "DEVICE_ALERT",
+      emergency: EMERGENCY_KINDS.includes(a.kind),
     })),
     ...replies.map((m) => ({
       id: `message:${m.id}`,

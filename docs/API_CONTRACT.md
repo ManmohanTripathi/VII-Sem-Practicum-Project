@@ -166,6 +166,16 @@ Set the MQTT **Last Will** to topic `carecircle/v1/hub/{deviceId}/status`, paylo
 - HTTP: all `/api/hub/*` calls require `Authorization: Bearer <device token>`. Caregivers can revoke a hub from the dashboard ("Unpair").
 - MQTT: the backend trusts the `{deviceId}` in the topic. A public broker is fine for demos. Real deployments should use a private broker with per-device credentials and ACLs limited to the hub's own `carecircle/v1/hub/{deviceId}/#`.
 
+## 9. Camera AI service (services/vision)
+
+The vision service is a trusted server-side process, not a paired device. It sends `Authorization: Bearer <VISION_TOKEN>`.
+
+- `GET /api/vision/cameras` → `{ cameras: [{ elderId, name, streamUrl }] }`, every parent with a camera set.
+- `POST /api/vision/event`:
+  - `{ "type": "observation", "elderId": "...", "people": [{ "posture": "standing|sitting|lying|unknown", "identity": "patient" | "<label>" | "unknown" | null, "confidence": 0.9 }] }`. Sent when what the camera sees changes, and at least once a minute. Counts as activity for the no-activity check.
+  - `{ "type": "fall", "elderId": "...", "identity": "patient", "confidence": 0.8 }` → critical `FALL_DETECTED` alert (at most one per 2 minutes).
+- Caregivers read the latest observation with `GET /api/elders/{id}/vision`.
+
 ## Senior app & caregiver endpoints (for reference)
 
 | Endpoint | Who | Purpose |

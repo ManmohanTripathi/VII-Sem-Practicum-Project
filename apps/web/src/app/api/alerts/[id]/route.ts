@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { requireCaregiverForElder } from "@/lib/auth";
 import { route } from "@/lib/http";
 import { emitCareEvent } from "@/lib/events";
+import { EMERGENCY_KINDS } from "@/lib/alerts";
 
 export const dynamic = "force-dynamic";
 
@@ -17,9 +18,10 @@ export const PATCH = route<{ params: Promise<{ id: string }> }>(async (request, 
   });
   emitCareEvent({ elderId: alert.elderId, type: "alert.updated", payload: alert });
 
-  // Several presses of the home device's button are one emergency: handling one handles them all.
-  if (alert.kind === "DEVICE_ALERT") {
-    const others = await prisma.alert.findMany({ where: { elderId: alert.elderId, kind: "DEVICE_ALERT", acknowledgedAt: null } });
+  // Several presses of the home device's button (or repeated falls seen by the camera) are one
+  // emergency: handling one handles them all.
+  if (EMERGENCY_KINDS.includes(alert.kind)) {
+    const others = await prisma.alert.findMany({ where: { elderId: alert.elderId, kind: alert.kind, acknowledgedAt: null } });
     for (const other of others) {
       const done = await prisma.alert.update({ where: { id: other.id }, data: { acknowledgedAt: alert.acknowledgedAt, acknowledgedBy: alert.acknowledgedBy } });
       emitCareEvent({ elderId: done.elderId, type: "alert.updated", payload: done });

@@ -27,6 +27,10 @@ An elder-care system built around three pillars (from the GUARDIAN project, see 
   - Each day becomes a feature vector: first activity time, movement, reminder adherence, meals, wellbeing, interactions.
   - The vector is compared against the parent's *own* 28-day baseline with a robust z-score (median/MAD), and every flag comes with a plain-language explanation ("First activity at 10:30, usually around 06:45").
   - Checks run in two places: a live "no activity yet this morning" check, and an end-of-day check at 20:00.
+- **Camera AI** (`services/vision`, open-source models only):
+  - **Fall detection:** YOLO pose finds each person's keypoints; posture (standing, sitting, lying) comes from torso and thigh angles. Upright to lying within 3 s, then still lying after 10 s, raises a critical `FALL_DETECTED` alert with the same siren as the emergency button.
+  - **Face recognition:** DeepFace (Facenet512) tells the patient apart from family and strangers, using a few enrolled photos. An unknown face alone at home gives a quiet "someone new" note.
+  - **Privacy:** frames stay on the machine that runs the service. Only posture and identity labels reach the backend. The dashboard live feed shows a "Camera AI" badge.
 - **Alerts feed and live updates:** caregivers can mark alerts "I'm on it", which siblings see. The dashboard updates over Server-Sent Events, with browser notifications for critical alerts and Expo push to caregiver phones.
 
 ### Companionship (AI)
@@ -97,6 +101,19 @@ cd apps/web
 npm test        # NLU, routine detection, companion shaping, timezone maths
 npm run lint
 ```
+
+### 5. Camera AI (optional)
+
+Needs Python 3.11 (TensorFlow, used by DeepFace, does not support newer versions yet).
+
+```bash
+cd services/vision
+python3.11 -m venv .venv && .venv/bin/pip install -r requirements.txt
+# same value as VISION_TOKEN in apps/web/.env.local
+VISION_TOKEN=... BACKEND_URL=http://localhost:3000 .venv/bin/uvicorn vision.app:app --port 8100
+```
+
+The service watches the ESP32-CAM of every parent with a camera set on the dashboard (the same `{cameraUrl}` the live feed uses). By default it reads `{cameraUrl}/stream`. Many ESP32-CAM sketches serve only one stream viewer at a time; if the dashboard's live feed stops while the service runs, set `CAMERA_PATH` to a snapshot path your firmware has (for example `CAMERA_PATH=/capture` or `/cam-hi.jpg`), and the service fetches one JPEG per second instead. `CAMERA_SOURCES=<elderId>=<url>` overrides the camera address for one parent. Enrol faces as described in `services/vision/faces/README.md`. Try the models on a photo with `curl -F file=@photo.jpg "localhost:8100/analyze?elder_id=<elderId>"`.
 
 ## Configuration
 

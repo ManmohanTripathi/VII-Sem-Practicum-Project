@@ -104,13 +104,13 @@ export function CaregiverScreen({ name, lang, onLang, onSignOut }: { name: strin
     // Event-driven: the server pushes each alert the moment it happens while the app is open.
     const closeEvents = openCareEvents((event) => {
       const p = event.payload ?? {};
-      if (event.type === "alert.created" && p.kind === "DEVICE_ALERT") {
+      if (event.type === "alert.created" && (p.kind === "DEVICE_ALERT" || p.kind === "FALL_DETECTED")) {
         raiseEmergency(String(p.id), event.elderId, String(p.message ?? ""));
         setRefreshKey((k) => k + 1);
         load();
       }
       // Someone tapped "I'm on it" (here, on the laptop, or a sibling): stop the alarm everywhere.
-      if (event.type === "alert.updated" && p.kind === "DEVICE_ALERT" && p.acknowledgedAt) {
+      if (event.type === "alert.updated" && (p.kind === "DEVICE_ALERT" || p.kind === "FALL_DETECTED") && p.acknowledgedAt) {
         if (emergencyRef.current?.elderId === event.elderId) setHandledBy(String(p.acknowledgedBy ?? "Someone"));
       }
     });
