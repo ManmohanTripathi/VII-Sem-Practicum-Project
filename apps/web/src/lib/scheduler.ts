@@ -10,6 +10,7 @@ import { reminderAnnouncement } from "@/lib/announce";
 import { runRoutineChecks } from "@/lib/ai/routine-service";
 import { zonedDayKey, zonedParts } from "@/lib/time";
 import { closeIdleConversations } from "@/lib/conversations";
+import { checkMmwaveOffline } from "@/lib/mmwave";
 
 // The backend "cron": every TICK_MS it walks each elder's day and
 //   1. dispatches reminders that just came due (hub via MQTT + senior app via push)
@@ -182,6 +183,11 @@ export async function tick(now = new Date()) {
     await closeIdleConversations(now);
   } catch (err) {
     console.error("[scheduler] conversation summaries:", err);
+  }
+  try {
+    await checkMmwaveOffline(now); // no-op until a mmWave sensor has reported
+  } catch (err) {
+    console.error("[scheduler] mmWave sensors:", err);
   }
   const elders = await prisma.elder.findMany();
   for (const elder of elders) {

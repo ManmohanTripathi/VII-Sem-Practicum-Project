@@ -31,6 +31,7 @@ An elder-care system built around three pillars (from the GUARDIAN project, see 
   - **Fall detection:** YOLO pose finds each person's keypoints; posture (standing, sitting, lying) comes from torso and thigh angles. Upright to lying within 3 s, then still lying after 10 s, raises a critical `FALL_DETECTED` alert with the same siren as the emergency button.
   - **Face recognition:** DeepFace (Facenet512) tells the patient apart from family and strangers, using a few enrolled photos. An unknown face alone at home gives a quiet "someone new" note.
   - **Privacy:** frames stay on the machine that runs the service. Only posture and identity labels reach the backend. The dashboard live feed shows a "Camera AI" badge.
+- **Bathroom fall sensor (optional, `firmware/esp32-mmwave`):** an ESP32 with an HLK-LD2410C mmWave radar on the bathroom ceiling. No camera, no microphone. It needs only the ESP32 and the radar. It waits 60 s for the person to get up or leave before it sends a fall or long-stay alarm. The dashboard and the caretaker app show a "Bathroom sensor" card only after the sensor's first message; without the sensor, nothing changes.
 - **Alerts feed and live updates:** caregivers can mark alerts "I'm on it", which siblings see. The dashboard updates over Server-Sent Events, with browser notifications for critical alerts and Expo push to caregiver phones.
 
 ### Companionship (AI)

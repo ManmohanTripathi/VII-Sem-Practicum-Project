@@ -15,6 +15,8 @@ import {
   fetchCheckIns,
   fetchConversations,
   fetchEnvironment,
+  fetchBathroomSensor,
+  type BathroomSensor,
   fetchInsights,
   fetchNotes,
   fetchPairing,
@@ -481,12 +483,14 @@ function HealthTab({ parent, reload }: TabProps) {
   const env = useLoad(() => fetchEnvironment(id), [id, reload]);
   const details = useLoad(() => fetchParent(id), [id, reload]);
   const reports = useLoad(() => fetchSelfReports(id), [id, reload]);
+  const bathroom = useLoad(() => fetchBathroomSensor(id), [id, reload]);
 
   return (
     <>
       <RoutineSection insights={insights.data} error={insights.error} first={first} />
       <EnvironmentSection env={env.data} error={env.error} />
       <CameraSection cameraUrl={details.data?.cameraUrl ?? null} first={first} />
+      {bathroom.data && <BathroomSection sensor={bathroom.data} />}
 
       <Section title="Mood" icon="happy-outline">
         {!details.data ? (
@@ -561,6 +565,33 @@ function RoutineSection({ insights, error, first }: { insights: Insights | null;
           <Text style={styles.meta}>Taller bars are days that were more unusual than normal.</Text>
         </>
       )}
+    </Section>
+  );
+}
+
+const BATHROOM_STATE: Record<BathroomSensor["state"], string> = {
+  empty: "Empty",
+  occupied: "In use",
+  on_floor: "Someone at floor level",
+  checking: "Asking “Are you OK?”",
+};
+
+// Only rendered once a mmWave bathroom sensor has reported (homes without one see no change).
+function BathroomSection({ sensor }: { sensor: BathroomSensor }) {
+  const online = Date.now() - new Date(sensor.at).getTime() < 3 * 60_000;
+  const room = sensor.room[0].toUpperCase() + sensor.room.slice(1);
+  return (
+    <Section title={`${room} sensor`} icon="pulse-outline">
+      {sensor.radar === "missing" ? (
+        <Text style={styles.body}>The sensor board is online, but the radar is not connected.</Text>
+      ) : (
+        <Text style={[styles.body, sensor.state === "on_floor" && { color: colors.bad, fontWeight: "700" }]}>
+          {BATHROOM_STATE[sensor.state]}
+        </Text>
+      )}
+      <Text style={styles.meta}>
+        {online ? "Online" : `Offline, last report ${ago(sensor.at)}`} · mmWave radar, no camera or microphone
+      </Text>
     </Section>
   );
 }

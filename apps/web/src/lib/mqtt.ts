@@ -14,6 +14,8 @@ export const TOPIC_PREFIX = "carecircle/v1/hub";
 const INBOUND = new Set(["telemetry", "event", "reply", "status"]);
 
 const alertTopic = () => process.env.MQTT_ALERT_TOPIC || "project/phase3sem7/alert";
+// The optional mmWave bathroom sensor (firmware/esp32-mmwave). Nothing happens until it publishes.
+const mmwaveTopic = () => process.env.MQTT_MMWAVE_TOPIC || "project/phase3sem7/mmwave";
 
 const g = globalThis as unknown as { ccMqtt?: MqttClient };
 
@@ -46,6 +48,7 @@ export async function startMqttBridge() {
     console.log(`[mqtt] connected to ${url}`);
     client.subscribe(`${TOPIC_PREFIX}/+/+`, { qos: 1 });
     client.subscribe(alertTopic(), { qos: 1 });
+    client.subscribe(mmwaveTopic(), { qos: 1 });
   });
   client.on("error", (err) => console.warn("[mqtt]", err.message));
 
@@ -57,6 +60,15 @@ export async function startMqttBridge() {
         console.log(`[mqtt] alert on ${topic}: "${buf.toString().slice(0, 80)}" -> ${raised.length} caregiver alert(s)`);
       } catch (err) {
         console.warn(`[mqtt] couldn't handle alert on ${topic}:`, (err as Error).message);
+      }
+      return;
+    }
+    if (topic === mmwaveTopic()) {
+      try {
+        const { handleMmwaveMessage } = await import("@/lib/mmwave");
+        await handleMmwaveMessage(buf.toString());
+      } catch (err) {
+        console.warn(`[mqtt] bad mmWave message on ${topic}:`, (err as Error).message);
       }
       return;
     }

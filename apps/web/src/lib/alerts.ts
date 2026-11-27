@@ -14,10 +14,12 @@ export type AlertKind =
   | "HUB_OFFLINE"
   | "DEVICE_ALERT"
   | "FALL_DETECTED"
-  | "UNKNOWN_PERSON";
+  | "UNKNOWN_PERSON"
+  | "BATHROOM_ALERT"
+  | "SENSOR_OFFLINE";
 
 // Alerts that take over the caretaker's screen with a siren until someone taps "I'm on it".
-export const EMERGENCY_KINDS: readonly string[] = ["DEVICE_ALERT", "FALL_DETECTED"];
+export const EMERGENCY_KINDS: readonly string[] = ["DEVICE_ALERT", "FALL_DETECTED", "BATHROOM_ALERT"];
 
 export type NewAlert = {
   elderId: string;

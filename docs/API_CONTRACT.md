@@ -176,6 +176,21 @@ The vision service is a trusted server-side process, not a paired device. It sen
   - `{ "type": "fall", "elderId": "...", "identity": "patient", "confidence": 0.8 }` → critical `FALL_DETECTED` alert (at most one per 2 minutes).
 - Caregivers read the latest observation with `GET /api/elders/{id}/vision`.
 
+## 10. Optional mmWave bathroom sensor (firmware/esp32-mmwave)
+
+MQTT only, on `MQTT_MMWAVE_TOPIC` (default `project/phase3sem7/mmwave`). JSON payload:
+
+```json
+{ "type": "status|fall|long_stay|presence_lost|ok", "elderId": "optional", "sensorId": "bathroom-1",
+  "room": "bathroom", "state": "empty|occupied|on_floor|checking", "radar": "ok|missing",
+  "distanceCm": 230, "moveEnergy": 5, "stillEnergy": 40, "minutes": 31 }
+```
+
+- `status` every 30 s (heartbeat) and on each state change. The first one makes the "Bathroom sensor" card appear. No heartbeat for 3 minutes gives one `SENSOR_OFFLINE` warning.
+- `fall`, `long_stay`: sent only after the sensor's own 60 s check (the person did not get up or leave). Each one is a critical `BATHROOM_ALERT` with the siren (at most one per type every 2 minutes). The backend also accepts `presence_lost` for sensors with a door switch.
+- Without `elderId`, messages go to `MQTT_ALERT_ELDER_ID`, or else to the parents with a camera, like the emergency alert topic.
+- Caregivers read the last state with `GET /api/elders/{id}/mmwave` (`{ "mmwave": null }` when no sensor has reported).
+
 ## Senior app & caregiver endpoints (for reference)
 
 | Endpoint | Who | Purpose |
